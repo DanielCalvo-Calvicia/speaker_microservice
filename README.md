@@ -273,19 +273,21 @@ Entry points:
 ### Startup Sequence
 
 1. `main.py` imports `setup()` from `composition_root.setup.setup`.
-2. `asyncio.run(setup())` starts the async application bootstrap.
-3. `setup()` locates `.env` with `dotenv.find_dotenv('.env')` and loads it if present.
-4. `SERVICE_HOST` is read with default `127.0.0.1`.
-5. `SERVICE_PORT` is read with default `8003` and converted to `int`.
-6. `BuildContainer(name="Speaker Microservice")` is called.
-7. `generate_speaker_dependency()` builds the concrete dependency tree.
-8. `container.speaker_dependency.adapter_inbound.app` is passed to Uvicorn.
-9. Uvicorn is configured with:
+2. `main.py` configures application logging with the resolved runtime environment.
+3. `asyncio.run(setup())` starts the async application bootstrap.
+4. `setup()` resolves the runtime environment from process variables, `.vscode/launch.json`, and the selected launch profile `envFile`.
+5. `setup()` locates `.env` with `dotenv.find_dotenv('.env')` and loads it if present.
+6. `SERVICE_HOST` is read with default `127.0.0.1`.
+7. `SERVICE_PORT` is read with default `8003` and converted to `int`.
+8. `BuildContainer(name="Speaker Microservice")` is called.
+9. `generate_speaker_dependency()` builds the concrete dependency tree.
+10. `container.speaker_dependency.adapter_inbound.app` is passed to Uvicorn.
+11. Uvicorn is configured with:
    - host: `SERVICE_HOST`
    - port: `SERVICE_PORT`
    - `log_level="info"`
    - `timeout_keep_alive=60`
-10. `await server.serve()` blocks until the server is stopped.
+12. `await server.serve()` blocks until the server is stopped.
 
 ### Initialization Process
 
@@ -907,31 +909,46 @@ Caching strategy:
 
 ## Configuration
 
-Configuration is loaded from `.env` if present. `.env.example` documents the intended variables.
+Configuration is loaded from VS Code launch configuration and `.env` if present. `.env.example` documents the intended variables.
 
 | Variable | Required | Default | Purpose | Example |
 | --- | --- | --- | --- | --- |
 | `SERVICE_HOST` | No | `127.0.0.1` | Host/IP for Uvicorn to bind. | `127.0.0.1` |
 | `SERVICE_PORT` | No | `8003` | Port for Uvicorn to listen on. Converted to `int`. | `8003` |
+| `APP_ENV` | No | `development` | Runtime environment. Supported values: `development`, `staging`, `production`. | `development` |
+| `VSCODE_ENV` | No | unset | Optional alternate runtime environment variable. `APP_ENV` takes precedence when both are set. | `staging` |
+| `VSCODE_LAUNCH_PROFILE` | No | inferred | Optional launch profile name used when resolving fallback env values from `.vscode/launch.json`. | `Python: Debug (development)` |
 | `SPEAKER_DEVICE_INDEX` | No | empty / `None` | Explicit `sounddevice` output device index. Empty means auto-detect. | `3` |
 | `SPEAKER_DEVICE_KEYWORDS` | No | `i2s,hw,default,sysdefault` | Comma-separated keywords used to auto-select output device by name. | `i2s,hw,default,sysdefault` |
 | `ALLOWED_ORIGINS` | No | `*` | Parsed into inbound adapter config. Intended CORS origins. | `*` |
 | `AUTOLOAD_STREAM_URL` | No | empty / `None` | If set, starts background worker that connects to this HTTP stream and plays bytes. | `http://127.0.0.1:8002/process/stream/get` |
-| `APP_ENV` | No | unset | Only set in `.vscode/launch.json`; not read by application code. | `debug` |
 
 Important configuration notes:
 
+- The checked-in VS Code launch profiles map to environments as follows: `Python: Debug (development)` -> `APP_ENV=development`, `Python: Debug (staging)` -> `APP_ENV=staging`, and `Python: Debug (production)` -> `APP_ENV=production`.
+- Runtime environment resolution precedence is: process environment `APP_ENV`, process environment `VSCODE_ENV`, selected VS Code launch profile `env.APP_ENV`, selected VS Code launch profile `env.VSCODE_ENV`, selected launch profile `envFile` values, then the safe fallback `development`.
+- Launch profile selection uses `VSCODE_LAUNCH_PROFILE` when present. If it is absent and exactly one launch profile targets `main.py`, that profile is used as the fallback source.
+- Invalid environment values are ignored and the resolver continues down the precedence chain. Supported values are `development`, `staging`, and `production`.
 - `ALLOWED_ORIGINS` is parsed and stored in `InitInboundAdapterDto`, but CORS middleware is not registered with `app.add_middleware(...)`. Therefore CORS behavior is currently FastAPI's default, not the configured variable. **Needs verification / technical debt.**
-- `.env` currently includes `AUTOLOAD_STREAM_URL=http://127.0.0.1:8002/process/stream/get`; `.env.example` leaves it empty.
 - No secrets are currently required by the inspected code.
 - If `SERVICE_PORT` or `SPEAKER_DEVICE_INDEX` contain non-integer values, startup will fail with `ValueError`.
+
+Logging behavior:
+
+- Application logs use `runtime.logger.get_logger()` and include timestamp, environment, level, logger scope, and message.
+- `development` shows `trace`, `info`, `warn`, `error`, and `critical`.
+- `staging` shows `warn`, `error`, and `critical`.
+- `production` shows `critical` only.
+- FastAPI/Uvicorn request logs, startup logs, shutdown logs, and server errors are not filtered by the application logger and remain visible in every environment.
+
+To add a new launch profile, copy the existing `.vscode/launch.json` profile, set a unique `name`, set `VSCODE_LAUNCH_PROFILE` to the same name, and set `APP_ENV` to one of `development`, `staging`, or `production`. Adding a new environment requires updating `SUPPORTED_ENVIRONMENTS` and the log-level map in `runtime/`.
 
 Config files:
 
 - `.env`: local runtime config.
 - `.env.example`: template config.
 - `.vscode/settings.json`: points VS Code Python interpreter to `windows/Scripts/python.exe`.
-- `.vscode/launch.json`: debug launch config for `main.py`, env file `.env`, and `APP_ENV=debug`.
+- `.vscode/launch.json`: debug launch config for `main.py`, env file `.env`, and explicit runtime environment values.
 - `requirements.windows.txt`: Python dependency list for Windows.
 - `requirements.linux.txt`: Python dependency list for Linux/Raspberry Pi-style hosts, including a note to install PortAudio/system sound packages first.
 
@@ -1204,7 +1221,7 @@ If rebuilding this project from scratch, what matters most:
 ## Unknowns / Technical Debt
 
 - **Needs verification:** Exact target hardware platform. The dependency keywords (`i2s`, `hw`, `default`, `sysdefault`) and Linux requirement note suggest Linux/Raspberry Pi or embedded speaker hardware, but the current workspace is Windows.
-- **Needs verification:** Audio producer contract for `AUTOLOAD_STREAM_URL`. Current `.env` points to `http://127.0.0.1:8002/process/stream/get`, but that service is not part of this repository.
+- **Needs verification:** Audio producer contract for `AUTOLOAD_STREAM_URL`. The example local stream URL points to `http://127.0.0.1:8002/process/stream/get`, but that service is not part of this repository.
 - **Needs verification:** Whether remote stream bytes are guaranteed to be 24000 Hz mono int16 PCM.
 - **Needs verification:** Whether HTTP playback should return success when the inbound stream read fails after playback starts.
 - **Needs verification:** Whether WebSocket clients need structured error events.
@@ -1213,7 +1230,7 @@ If rebuilding this project from scratch, what matters most:
 - No conventional automated unit tests are present.
 - `tests/simple.py` is a manual integration test that plays audible sound and starts a subprocess; it is not a normal pytest test despite the `tests/` location.
 - No Docker/deployment/CI configuration exists.
-- Console logging is configured in `main.py` with Python `logging.basicConfig(...)`; if `setup()` is reused without `main.py`, callers must configure logging themselves.
+- Application logging is configured in `main.py` through `runtime.logger.configure_logging(...)`; if `setup()` is reused directly, callers should configure logging first.
 - `soundfile` and `numpy` are declared dependencies but not used by application source.
 - `service_to_adapter_outbound.py` mapper is unused.
 - Queue sizes are unbounded.

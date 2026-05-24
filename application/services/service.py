@@ -1,10 +1,9 @@
-import logging
-
 from application.ports.service_port import SpeakerServicePort
 from application.ports.adapter_outbound_port import AdapterOutboundPort
 from application.dtos.services_dtos import PlaybackStreamRequestDto, PlaybackStreamResponseDto, SpeakerCleanupResponseDto
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.application.service")
+logger = get_logger("application.service")
 
 class SpeakerService(SpeakerServicePort):
     def __init__(self, outbound_port: AdapterOutboundPort):

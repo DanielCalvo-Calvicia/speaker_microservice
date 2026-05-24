@@ -1,8 +1,8 @@
-import logging
 from dataclasses import dataclass
 from composition_root.dependencies.speaker_dependency import SpeakerDependency, generate_speaker_dependency
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.container")
+logger = get_logger("container")
 
 @dataclass(slots=True, frozen=True)
 class Container:

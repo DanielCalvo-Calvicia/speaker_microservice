@@ -1,5 +1,4 @@
 import time
-import logging
 import asyncio
 from typing import AsyncGenerator, Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, status
@@ -17,8 +16,9 @@ from application.dtos.adapter_inbound_dtos import (
 from application.dtos.mapper.adapter_inbound_to_service import map_inbound_to_service_playback_request
 from application.dtos.mapper.service_to_adapter_inbound import map_service_to_inbound_playback_response
 from infrastructure.inbound.http.audio_stream_autoloader import AudioStreamAutoloader
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.infrastructure.inbound")
+logger = get_logger("infrastructure.inbound")
 
 
 class FastApiAdapter(AdapterInboundPort):
@@ -226,7 +226,7 @@ class FastApiAdapter(AdapterInboundPort):
                     await websocket.close()
                     logger.info("WebSocket connection closed.")
                 except Exception:
-                    logger.debug("WebSocket close failed or connection was already closed.", exc_info=True)
+                    logger.trace("WebSocket close failed or connection was already closed.", exc_info=True)
                     pass
 
     def start_autoload(self) -> None:
@@ -245,7 +245,7 @@ class FastApiAdapter(AdapterInboundPort):
 
     @property
     def get_app(self) -> Any:
-        logger.debug("FastAPI app requested from inbound adapter.")
+        logger.trace("FastAPI app requested from inbound adapter.")
         return self.app
 
     async def play(self, request: StartSpeakerStreamRequestDto) -> StartSpeakerStreamResponseDto:

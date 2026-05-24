@@ -1,12 +1,12 @@
 import sounddevice as sd
 import asyncio
-import logging
 from typing import Optional
 from application.ports.adapter_outbound_port import AdapterOutboundPort
 from application.dtos.adapter_outbound_dtos import InitOutboundAdapterDto
 from application.dtos.services_dtos import PlaybackStreamRequestDto, PlaybackStreamResponseDto, SpeakerCleanupResponseDto
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.infrastructure.outbound")
+logger = get_logger("infrastructure.outbound")
 
 class SoundDeviceSpeakerAdapter(AdapterOutboundPort):
     def __init__(self, config: InitOutboundAdapterDto):
@@ -48,7 +48,7 @@ class SoundDeviceSpeakerAdapter(AdapterOutboundPort):
                 max_output = int(info.get("max_output_channels", 0))
                 
                 if max_output > 0:
-                    logger.debug(f"Device ID {i} candidate: '{name}' Channels: {max_output}")
+                    logger.trace("Device ID %s candidate: '%s' Channels: %s", i, name, max_output)
                     if any(kw.lower() in name.lower() for kw in keywords):
                         logger.info(f"Auto-selected device ID {i}: '{name}' based on keywords.")
                         return i

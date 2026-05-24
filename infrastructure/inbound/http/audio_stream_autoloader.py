@@ -1,11 +1,11 @@
 import asyncio
-import logging
 import httpx
 from typing import AsyncIterator
 
 from application.dtos.adapter_inbound_dtos import StartSpeakerStreamRequestDto
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.infrastructure.inbound.autoloader")
+logger = get_logger("infrastructure.inbound.autoloader")
 
 class AudioStreamAutoloader:
     def __init__(self, stream_url: str, inbound_adapter):
