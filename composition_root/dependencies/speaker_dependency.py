@@ -1,5 +1,4 @@
 import os
-import logging
 from dataclasses import dataclass
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
@@ -9,8 +8,9 @@ from application.dtos.adapter_outbound_dtos import InitOutboundAdapterDto
 from application.dtos.adapter_inbound_dtos import InitInboundAdapterDto
 from infrastructure.outbound.speaker.sounddevice_adapter import SoundDeviceSpeakerAdapter
 from infrastructure.inbound.http.fastapi_adapter import FastApiAdapter
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.composition_root")
+logger = get_logger("composition_root")
 
 @dataclass(slots=True, frozen=True)
 class SpeakerDependency:

@@ -4,13 +4,64 @@ Technical handoff README for future maintainers and for AI/developer knowledge t
 
 This document is based on direct repository inspection of the current project state. Items marked **Inferred** are conclusions drawn from code structure or naming. Items marked **Needs verification** require runtime testing on the target hardware or integration environment.
 
+## Quick Start
+
+This service listens for raw signed 16-bit PCM audio over HTTP and plays it through a local output device.
+
+1. Copy `.env.example` to `.env` if needed and adjust the host, port, and speaker device settings.
+2. Install dependencies for your platform.
+3. Start the service with `python main.py`.
+4. Check `GET /health`.
+5. Stream raw PCM bytes to `POST /process/stream/set`.
+
+Windows:
+
+```powershell
+.\windows\Scripts\python.exe main.py
+```
+
+Fresh Windows environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.windows.txt
+python main.py
+```
+
+Linux / Raspberry Pi-style host:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y portaudio19-dev python3-pyaudio python3-sounddevice
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.linux.txt
+python main.py
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8003/health
+```
+
+Stream a finite raw PCM file:
+
+```bash
+curl -N -X POST "http://127.0.0.1:8003/process/stream/set?sample_rate=24000&channels=1" \
+  --data-binary "@audio.raw"
+```
+
+The playback endpoint responds as newline-delimited JSON. A successful setup begins with a `stream_started` event, then a `completed` event when the request body ends and playback cleanup finishes.
+
 ## Project Overview
 
-The project is a Python FastAPI microservice that receives raw audio byte streams over HTTP or WebSocket and plays them through a local speaker/output device using `sounddevice` / PortAudio.
+The project is a Python FastAPI microservice that receives raw audio byte streams over HTTP and plays them through a local speaker/output device using `sounddevice` / PortAudio.
 
 The service is structured as a small ports-and-adapters application:
 
-- inbound adapter: FastAPI HTTP/WebSocket interface in `infrastructure/inbound/http/fastapi_adapter.py`
+- inbound adapter: FastAPI HTTP interface in `infrastructure/inbound/http/fastapi_adapter.py`
 - application service: validation/orchestration in `application/services/service.py`
 - outbound adapter: local audio hardware playback through `sounddevice` in `infrastructure/outbound/speaker/sounddevice_adapter.py`
 - composition root: dependency construction, environment loading, FastAPI lifespan, and Uvicorn startup in `composition_root/`
@@ -18,8 +69,7 @@ The service is structured as a small ports-and-adapters application:
 Main responsibilities:
 
 - expose health status at `GET /health`
-- accept streamed raw PCM audio over `POST /play/stream`
-- accept streamed raw PCM audio over `WebSocket /play/ws`
+- accept streamed raw PCM audio over `POST /process/stream/set`
 - optionally autoload and continuously consume an external streaming HTTP endpoint configured by `AUTOLOAD_STREAM_URL`
 - select a speaker/output device either by explicit device index or keyword-based auto-discovery
 - open a `sounddevice.RawOutputStream`, write audio bytes to it, and clean up the stream on shutdown
@@ -47,8 +97,7 @@ Main workflow and lifecycle:
 
 ```mermaid
 flowchart LR
-    ClientHTTP["HTTP client<br/>POST /play/stream"] --> FastAPI["FastApiAdapter"]
-    ClientWS["WebSocket client<br/>/play/ws"] --> FastAPI
+    ClientHTTP["HTTP client<br/>POST /process/stream/set"] --> FastAPI["FastApiAdapter"]
     ExternalStream["External audio stream<br/>AUTOLOAD_STREAM_URL"] --> Autoloader["AudioStreamAutoloader"]
     Autoloader --> FastAPI
 
@@ -108,10 +157,11 @@ classDiagram
 | `application/dtos/*.py` | Dataclass DTOs for inbound config/request/response, outbound config, service request/response, cleanup response. |
 | `application/dtos/mapper/*.py` | Boundary mapping functions between adapter DTOs and service DTOs. |
 | `application/services/service.py` | Application-level validation and delegation to outbound playback port. |
-| `infrastructure/inbound/http/fastapi_adapter.py` | FastAPI routes and WebSocket handling. Converts network streams into async byte iterators. |
+| `infrastructure/inbound/http/fastapi_adapter.py` | FastAPI HTTP routes. Converts network streams into async byte iterators. |
 | `infrastructure/inbound/http/audio_stream_autoloader.py` | Optional background worker that connects to an external streaming HTTP endpoint and plays its bytes locally. |
 | `infrastructure/outbound/speaker/sounddevice_adapter.py` | Device selection, `RawOutputStream` lifecycle, playback queue, audio writes, cleanup. |
-| `tests/simple.py` | Manual/integration-style test that launches the service, checks health, and sends a generated sine wave over WebSocket. |
+| `tests/test_stream_contract.py` | Automated pytest coverage for the HTTP stream contract and NDJSON event shape. |
+| `tests/simple.py` | Manual/integration-style audible playback helper. |
 
 ### Data Flow
 
@@ -125,41 +175,19 @@ sequenceDiagram
     participant D as SoundDeviceSpeakerAdapter
     participant HW as Output Device
 
-    C->>A: POST /play/stream?sample_rate=...&channels=...<br/>raw chunked body
-    A->>A: request.stream() -> AsyncGenerator[bytes]
+    C->>A: POST /process/stream/set?sample_rate=...&channels=...<br/>raw chunked body
     A->>S: play(PlaybackStreamRequestDto)
     S->>S: validate sample_rate/channels
     S->>D: play_stream(request)
     D->>D: open RawOutputStream
+    D-->>A: setup success/failure
+    A-->>C: HTTP 200 + stream_started when setup succeeds
+    A->>A: request.stream() -> AsyncGenerator[bytes]
     D->>D: enqueue chunks
     D->>HW: stream.write(chunk) via asyncio.to_thread
     D-->>S: PlaybackStreamResponseDto
     S-->>A: PlaybackStreamResponseDto
-    A-->>C: JSON success/error response
-```
-
-WebSocket playback:
-
-```mermaid
-sequenceDiagram
-    participant C as WebSocket Client
-    participant A as FastApiAdapter
-    participant S as SpeakerService
-    participant D as SoundDeviceSpeakerAdapter
-
-    C->>A: Connect /play/ws?sample_rate=...&channels=...
-    A-->>C: accept()
-    A->>S: create background playback task
-    loop binary frames
-        C->>A: bytes
-        A->>A: queue.put(bytes)
-        A->>S: generator yields queue bytes
-        S->>D: play_stream consumes generator
-    end
-    C->>A: text "EOF" or disconnect
-    A->>A: queue.put(b"") sentinel
-    A->>A: await playback_task
-    A-->>C: close websocket
+    A-->>C: completed/error when input ends or fails
 ```
 
 Autoload playback:
@@ -273,19 +301,21 @@ Entry points:
 ### Startup Sequence
 
 1. `main.py` imports `setup()` from `composition_root.setup.setup`.
-2. `asyncio.run(setup())` starts the async application bootstrap.
-3. `setup()` locates `.env` with `dotenv.find_dotenv('.env')` and loads it if present.
-4. `SERVICE_HOST` is read with default `127.0.0.1`.
-5. `SERVICE_PORT` is read with default `8003` and converted to `int`.
-6. `BuildContainer(name="Speaker Microservice")` is called.
-7. `generate_speaker_dependency()` builds the concrete dependency tree.
-8. `container.speaker_dependency.adapter_inbound.app` is passed to Uvicorn.
-9. Uvicorn is configured with:
+2. `main.py` configures application logging with the resolved runtime environment.
+3. `asyncio.run(setup())` starts the async application bootstrap.
+4. `setup()` resolves the runtime environment from process variables, `.vscode/launch.json`, and the selected launch profile `envFile`.
+5. `setup()` locates `.env` with `dotenv.find_dotenv('.env')` and loads it if present.
+6. `SERVICE_HOST` is read with default `127.0.0.1`.
+7. `SERVICE_PORT` is read with default `8003` and converted to `int`.
+8. `BuildContainer(name="Speaker Microservice")` is called.
+9. `generate_speaker_dependency()` builds the concrete dependency tree.
+10. `container.speaker_dependency.adapter_inbound.app` is passed to Uvicorn.
+11. Uvicorn is configured with:
    - host: `SERVICE_HOST`
    - port: `SERVICE_PORT`
    - `log_level="info"`
    - `timeout_keep_alive=60`
-10. `await server.serve()` blocks until the server is stopped.
+12. `await server.serve()` blocks until the server is stopped.
 
 ### Initialization Process
 
@@ -312,38 +342,31 @@ Dependency creation happens in `composition_root/dependencies/speaker_dependency
 Routes are registered imperatively inside `FastApiAdapter.register_routes(app)`:
 
 - `GET /health`
-- `POST /play/stream`
-- `WebSocket /play/ws`
+- `POST /process/stream/set`
 
 FastAPI lifespan is defined before `FastApiAdapter` is instantiated. The closure captures `adapter_inbound`, initially `None`, and later assigned to the created adapter. On startup, the lifespan calls `adapter_inbound.start_autoload()` if available.
 
 ### Request Lifecycle
 
-For `POST /play/stream`:
+For `POST /process/stream/set`:
 
 1. FastAPI receives a request body, intended to be raw chunked bytes.
 2. Query parameters are bound:
    - `sample_rate: int = 24000`
    - `channels: int = 1`
-3. `request.stream()` is wrapped as `AsyncGenerator[bytes]`.
-4. `StartSpeakerStreamRequestDto` is created.
-5. `FastApiAdapter.play()` maps inbound DTO to service DTO.
-6. `SpeakerService.play()` validates sample rate and channel count.
-7. `SoundDeviceSpeakerAdapter.play_stream()` opens an audio output stream and consumes the async byte iterator.
-8. The route waits until playback stream consumption and queue cleanup complete.
-9. A JSON response is returned.
-
-For `WebSocket /play/ws`:
-
-1. Server accepts the WebSocket.
-2. An internal `asyncio.Queue[bytes]` is created.
-3. A queue-backed async generator is wrapped in `StartSpeakerStreamRequestDto`.
-4. Playback is started as a background task with `asyncio.create_task(self.play(...))`.
-5. Binary WebSocket messages are enqueued as audio chunks.
-6. Text message `"EOF"` ends the receive loop.
-7. `WebSocketDisconnect` also ends the receive loop.
-8. A sentinel empty byte string `b""` is put into the queue.
-9. The route awaits the playback task, then attempts to close the WebSocket.
+   - `keep_open_after_completed: bool = False`
+   - `heartbeat_interval_seconds: float = 15.0`
+   - `max_heartbeats_after_completed: int | None = None`
+3. The route starts playback setup and waits only until validation and speaker stream setup have succeeded or failed.
+4. `SpeakerService.play()` validates sample rate and channel count.
+5. `SoundDeviceSpeakerAdapter.play_stream()` opens the audio output stream and starts its playback worker.
+6. If setup fails, the route returns an HTTP `500` JSON error response and does not accept the audio stream.
+7. If setup succeeds, the route returns HTTP `200` with a live `application/x-ndjson` `StreamingResponse`.
+8. The first response event is `stream_started`; this is the setup acknowledgement that the speaker stream is ready.
+9. After acknowledgement, request chunks continue to be read from `request.stream()` and written to the speaker.
+10. The response stream remains open while the request body is being consumed.
+11. When the input stream ends, the route may emit `completed`; if request reading or playback fails after setup, it may emit `error`.
+12. Optional heartbeat events can be appended after completion when requested.
 
 ### Shutdown Behavior
 
@@ -369,8 +392,7 @@ Autoloader cleanup:
 
 - Default listening address: `127.0.0.1:8003`
 - HTTP health: `GET http://127.0.0.1:8003/health`
-- HTTP raw PCM playback: `POST http://127.0.0.1:8003/play/stream?sample_rate=24000&channels=1`
-- WebSocket raw PCM playback: `ws://127.0.0.1:8003/play/ws?sample_rate=24000&channels=1`
+- HTTP raw PCM playback: `POST http://127.0.0.1:8003/process/stream/set?sample_rate=24000&channels=1`
 - Optional outbound autoload stream client: URL configured by `AUTOLOAD_STREAM_URL`
 - Audio hardware interface: local `sounddevice.RawOutputStream` to selected output device
 
@@ -379,12 +401,11 @@ Autoloader cleanup:
 | Type | Port | Protocol | Path/Topic | Purpose | Handler | Dependencies |
 | --- | --- | --- | --- | --- | --- | --- |
 | Inbound HTTP | `SERVICE_PORT` default `8003` | HTTP | `GET /health` | Health check | `FastApiAdapter.health_check` closure | FastAPI only |
-| Inbound HTTP | `SERVICE_PORT` default `8003` | HTTP | `POST /play/stream` | Stream raw PCM body to speaker | `FastApiAdapter.play_stream_http` closure | `SpeakerService`, `SoundDeviceSpeakerAdapter`, `sounddevice` |
-| Inbound WebSocket | `SERVICE_PORT` default `8003` | WebSocket | `/play/ws` | Stream binary WebSocket frames to speaker | `FastApiAdapter.play_stream_ws` closure | `SpeakerService`, `SoundDeviceSpeakerAdapter`, `sounddevice` |
+| Inbound HTTP | `SERVICE_PORT` default `8003` | HTTP | `POST /process/stream/set` | Stream raw PCM body to speaker | `FastApiAdapter.set_stream_http` closure | `SpeakerService`, `SoundDeviceSpeakerAdapter`, `sounddevice` |
 | Outbound HTTP client | N/A | HTTP/HTTPS | `AUTOLOAD_STREAM_URL` | Pull remote audio stream and play it locally | `AudioStreamAutoloader._worker` | `httpx.AsyncClient`, inbound adapter, service, sounddevice |
 | Hardware output | N/A | PortAudio/native audio API | Selected sound device index | Play raw audio bytes | `SoundDeviceSpeakerAdapter` | `sounddevice`, PortAudio, OS audio driver |
 | CLI/process | N/A | Local process | `python main.py` | Start service | `main.py` | Python, Uvicorn, env config |
-| CLI/test | N/A | Local process + HTTP + WebSocket | `python tests/simple.py` | Manual E2E sine wave playback | `tests/simple.py` | Service process, health endpoint, WebSocket endpoint, local speaker |
+| CLI/test | N/A | Local process | `python tests/simple.py` | Manual helper script | `tests/simple.py` | Service process, health endpoint, local speaker |
 
 ### Inbound HTTP: `GET /health`
 
@@ -459,12 +480,13 @@ Timeouts/retry behavior:
 
 - No route-specific timeout or retry logic.
 
-### Inbound HTTP: `POST /play/stream`
+### Inbound HTTP: `POST /process/stream/set`
 
 Purpose:
 
-- Accept raw audio bytes via HTTP request body and play them to the selected speaker device.
+- Set up a speaker playback stream and accept raw audio bytes via the same HTTP request body.
 - Intended for chunked transfer streaming, but also accepts a normal request body because the implementation uses `request.stream()`.
+- HTTP `200` means stream setup succeeded. It does not mean the audio input has finished playing.
 
 Port:
 
@@ -476,7 +498,7 @@ Protocol:
 
 Path:
 
-- `/play/stream`
+- `/process/stream/set`
 
 Query parameters:
 
@@ -484,6 +506,9 @@ Query parameters:
 | --- | --- | --- | --- |
 | `sample_rate` | `int` | `24000` | Sample rate passed to `sounddevice.RawOutputStream`. |
 | `channels` | `int` | `1` | Channel count passed to `sounddevice.RawOutputStream`. |
+| `keep_open_after_completed` | `bool` | `false` | Keep the response stream open after the input stream ends and completion is reported. |
+| `heartbeat_interval_seconds` | `float` | `15.0` | Delay between post-completion `heartbeat` events when the stream is kept open. |
+| `max_heartbeats_after_completed` | `int \| null` | `null` | Optional cap for post-completion heartbeats, useful for tests or bounded clients. |
 
 Authentication:
 
@@ -499,13 +524,14 @@ Expected request format:
 Example request with an existing PCM file:
 
 ```bash
-curl -X POST "http://127.0.0.1:8003/play/stream?sample_rate=24000&channels=1" \
+curl -N -X POST "http://127.0.0.1:8003/process/stream/set?sample_rate=24000&channels=1" \
   --data-binary "@audio.raw"
 ```
 
-Example Python chunked client:
+Example Python client for a finite PCM file:
 
 ```python
+import json
 import httpx
 
 def chunks(path, size=4096):
@@ -514,32 +540,60 @@ def chunks(path, size=4096):
             yield data
 
 with httpx.Client(timeout=None) as client:
-    response = client.post(
-        "http://127.0.0.1:8003/play/stream",
+    with client.stream(
+        "POST",
+        "http://127.0.0.1:8003/process/stream/set",
         params={"sample_rate": 24000, "channels": 1},
         content=chunks("audio.raw"),
-    )
-    print(response.status_code, response.json())
+    ) as response:
+        for line in response.iter_lines():
+            event = json.loads(line)
+            if event["type"] == "stream_started":
+                print("speaker stream ready")
+            if event["type"] == "completed":
+                print(event["payload"])
+                break
 ```
 
-Success response:
+For an unbounded live producer, use an HTTP client/runtime that supports keeping the response stream open while the request body is still uploading. The client should treat HTTP `200` plus `stream_started` as the setup acknowledgement and continue sending audio chunks until it wants playback to end.
+
+Streaming response contract:
+
+- Media type: `application/x-ndjson`
+- Each line is one complete JSON object.
+- Every event contains `type`, `sequence`, `timestamp`, and `payload`.
+- `sequence` starts at `1` and increments by one for each event in the response stream.
+- `timestamp` is an ISO-8601 UTC timestamp.
+- The route waits for speaker setup before returning a successful response.
+- HTTP `200` plus `stream_started` means the audio output stream has been set up and the request body is now being consumed as speaker input.
+- Setup failures return HTTP `500` with a JSON error body instead of an NDJSON `stream_started` event.
+- The request body continues streaming into the service/outbound adapter after the setup acknowledgement.
+- The response stream stays open while the request body is being consumed; clients that close the response early may also stop the upload.
+- `completed` is emitted only after the input body ends and playback queue cleanup completes.
+- `error` can be emitted after setup if request reading or playback fails.
+- Clients should treat missing required fields as protocol errors, log unknown event types, and stop or retry on `error`.
+
+Supported event types:
+
+| Event type | Payload |
+| --- | --- |
+| `stream_started` | `{"message": "Playback stream started"}` |
+| `completed` | `{"reason": "end_of_input", "output": "", "chunk_count": 1, "byte_count": 4096, "message": "Playback session finalized successfully"}` |
+| `error` | `{"code": "request_stream_failed", "message": "Failed to read request stream: ...", "recoverable": true}` |
+| `heartbeat` | `{}` |
+
+Example successful finite event stream:
+
+```ndjson
+{"type":"stream_started","sequence":1,"timestamp":"2026-05-24T12:00:00Z","payload":{"message":"Playback stream started"}}
+{"type":"completed","sequence":2,"timestamp":"2026-05-24T12:00:01Z","payload":{"reason":"end_of_input","output":"","chunk_count":1,"byte_count":3,"message":"Playback session finalized successfully"}}
+```
+
+Example setup failure response:
 
 ```json
 {
-  "action": "play_stream_http",
-  "status": "success",
-  "status_code": 200,
-  "message": "Playback session finalized successfully",
-  "timestamp": 1710000000.0,
-  "data": null
-}
-```
-
-Failure response from service-level failure:
-
-```json
-{
-  "action": "play_stream_http",
+  "action": "set_stream_http",
   "status": "error",
   "status_code": 500,
   "message": "Hardware stream open failure: ...",
@@ -548,23 +602,10 @@ Failure response from service-level failure:
 }
 ```
 
-Failure response from route exception:
-
-```json
-{
-  "action": "play_stream_http",
-  "status": "error",
-  "status_code": 500,
-  "message": "Failed to play stream: ...",
-  "timestamp": 1710000000.0,
-  "data": "..."
-}
-```
-
 Internal handler/module:
 
 - `infrastructure/inbound/http/fastapi_adapter.py`
-- Closure registered by `@app.post("/play/stream", tags=["Playback"])`
+- Closure registered by `@app.post("/process/stream/set", tags=["Playback"])`
 
 Dependencies triggered:
 
@@ -589,11 +630,11 @@ Required environment variables:
 
 Failure behavior:
 
-- `sample_rate <= 0`: service returns `success=False` with `"Invalid sample rate. Must be positive."`, HTTP route converts this to 500.
-- `channels <= 0`: service returns `success=False` with `"Invalid channel count. Must be positive."`, HTTP route converts this to 500.
-- Hardware open failure: response is 500 with `"Hardware stream open failure: ..."`
+- `sample_rate <= 0`: service returns `success=False` with `"Invalid sample rate. Must be positive."`, HTTP route returns HTTP `500` JSON before accepting the stream.
+- `channels <= 0`: service returns `success=False` with `"Invalid channel count. Must be positive."`, HTTP route returns HTTP `500` JSON before accepting the stream.
+- Hardware open failure: HTTP route returns HTTP `500` JSON with `"Hardware stream open failure: ..."` before emitting `stream_started`.
 - If opening at requested sample rate fails, adapter retries at `44100` Hz with same channel count and device index.
-- Errors while consuming inbound stream are logged but `play_stream()` still returns success after cleanup. This means an interrupted inbound generator may still produce a 200 response. **Needs verification** whether this behavior is acceptable.
+- Errors while consuming the inbound request stream are logged by the HTTP adapter and returned as an NDJSON `error` event with `code="request_stream_failed"`.
 - Errors during `stream.write()` are logged and break the background worker, but `play_stream()` still generally returns success after queue cleanup. **Needs verification** for production error reporting requirements.
 
 Timeouts/retry behavior:
@@ -603,113 +644,6 @@ Timeouts/retry behavior:
 - Internal audio worker polls queue with `asyncio.wait_for(queue.get(), timeout=0.1)`.
 - Hardware stream open retry: one fallback attempt at 44100 Hz.
 - No HTTP request-level timeout is configured by this service.
-
-### Inbound WebSocket: `/play/ws`
-
-Purpose:
-
-- Accept raw PCM audio as binary WebSocket messages and play them to the selected speaker.
-
-Port:
-
-- `SERVICE_PORT`, default `8003`
-
-Protocol:
-
-- WebSocket
-
-Path:
-
-- `/play/ws`
-
-Query parameters:
-
-| Parameter | Type | Default | Purpose |
-| --- | --- | --- | --- |
-| `sample_rate` | `int` | `24000` | Sample rate passed to `sounddevice.RawOutputStream`. |
-| `channels` | `int` | `1` | Channel count passed to `sounddevice.RawOutputStream`. |
-
-Authentication:
-
-- None implemented.
-
-Expected request/event format:
-
-- Binary frames: raw PCM audio chunks.
-- Text frame `"EOF"`: graceful end-of-stream marker.
-- Disconnect: also ends the server receive loop.
-
-Expected response/event format:
-
-- The server does not send application-level messages.
-- On completion or disconnect it attempts to close the WebSocket.
-
-Example client:
-
-```python
-import asyncio
-import math
-import struct
-import websockets
-
-async def sine_chunks(sample_rate=44100, duration=2.0, freq=440.0):
-    chunk_size = 2048
-    total = int(sample_rate * duration)
-    for i in range(0, total, chunk_size):
-        buf = bytearray()
-        for j in range(chunk_size):
-            if i + j >= total:
-                break
-            value = int(math.sin(2 * math.pi * freq * (i + j) / sample_rate) * 20000)
-            buf.extend(struct.pack("<h", value))
-        yield bytes(buf)
-        await asyncio.sleep((chunk_size / sample_rate) * 0.8)
-
-async def main():
-    uri = "ws://127.0.0.1:8003/play/ws?sample_rate=44100&channels=1"
-    async with websockets.connect(uri) as ws:
-        async for chunk in sine_chunks():
-            await ws.send(chunk)
-        await ws.send("EOF")
-
-asyncio.run(main())
-```
-
-Internal handler/module:
-
-- `infrastructure/inbound/http/fastapi_adapter.py`
-- Closure registered by `@app.websocket("/play/ws")`
-
-Dependencies triggered:
-
-- `asyncio.Queue`
-- `StartSpeakerStreamRequestDto`
-- `FastApiAdapter.play`
-- `SpeakerService.play`
-- `SoundDeviceSpeakerAdapter.play_stream`
-- `sounddevice.RawOutputStream`
-
-Side effects:
-
-- Same playback/hardware side effects as HTTP playback.
-- Starts a playback orchestration task per WebSocket connection.
-- If concurrent playback is active, the outbound adapter cancels current playback before starting the new one.
-
-Required environment variables:
-
-- Same as `POST /play/stream`.
-
-Failure behavior:
-
-- WebSocket disconnect is logged and treated as stream termination.
-- Exceptions from playback task are logged in `finally`.
-- The server does not send a structured failure message to the WebSocket client.
-- Invalid `sample_rate` or `channels` produces a failed service response inside the background playback task, but the WebSocket route does not forward that message to the client. **Needs verification** if client-visible error reporting is required.
-
-Timeouts/retry behavior:
-
-- No WebSocket-specific timeout or ping/pong behavior is configured.
-- Audio worker queue polling and cleanup timeouts are the same as HTTP playback.
 
 ### Optional Outbound HTTP Autoload Client: `AUTOLOAD_STREAM_URL`
 
@@ -823,7 +757,7 @@ Concurrency:
 
 - `SoundDeviceSpeakerAdapter` has a single mutable `self.stream`, `_playback_task`, and `_is_playing`.
 - When `play_stream()` starts while `_is_playing` is true, it calls `cleanup_playback_task()` to cancel the existing playback task.
-- **Needs verification:** Concurrent HTTP/WebSocket/autoload calls are not protected by an explicit lock, so overlapping `play_stream()` calls may race around shared stream state.
+- **Needs verification:** Concurrent HTTP/autoload calls are not protected by an explicit lock, so overlapping `play_stream()` calls may race around shared stream state.
 
 Failure behavior:
 
@@ -844,7 +778,7 @@ MQTT:
 Message queues:
 
 - No external message queue.
-- Internal in-memory `asyncio.Queue` is used for WebSocket buffering and outbound playback worker buffering.
+- Internal in-memory `asyncio.Queue` is used for outbound playback worker buffering.
 
 Serial ports:
 
@@ -858,7 +792,6 @@ Background workers:
 
 - Optional `AudioStreamAutoloader` task when `AUTOLOAD_STREAM_URL` is set.
 - Per-playback internal audio worker task in `SoundDeviceSpeakerAdapter.play_stream()`.
-- Per-WebSocket playback task in `FastApiAdapter.play_stream_ws()`.
 
 File watchers:
 
@@ -871,7 +804,7 @@ IPC mechanisms:
 CLI commands:
 
 - `python main.py`: start service.
-- `python tests/simple.py`: launch service subprocess and perform manual WebSocket playback test.
+- `python tests/simple.py`: manual helper script.
 
 Internal event buses:
 
@@ -885,11 +818,11 @@ The service data model is composed of immutable dataclass DTOs:
 
 | DTO | File | Fields | Purpose |
 | --- | --- | --- | --- |
-| `InitInboundAdapterDto` | `application/dtos/adapter_inbound_dtos.py` | `allow_origins: tuple[str, ...]`, `autoload_stream_url: str \| None` | Configuration for inbound HTTP/WebSocket adapter. |
-| `StartSpeakerStreamRequestDto` | `application/dtos/adapter_inbound_dtos.py` | `audio_stream: AsyncIterator[bytes]`, `sample_rate: int = 24000`, `channels: int = 1` | Inbound playback request. |
+| `InitInboundAdapterDto` | `application/dtos/adapter_inbound_dtos.py` | `allow_origins: tuple[str, ...]`, `autoload_stream_url: str \| None` | Configuration for inbound HTTP adapter. |
+| `StartSpeakerStreamRequestDto` | `application/dtos/adapter_inbound_dtos.py` | `audio_stream: AsyncIterator[bytes]`, `sample_rate: int = 24000`, `channels: int = 1`, `setup_future: asyncio.Future[PlaybackStreamResponseDto] \| None = None` | Inbound playback request plus optional setup acknowledgement hook. |
 | `StartSpeakerStreamResponseDto` | `application/dtos/adapter_inbound_dtos.py` | `success: bool`, `message: str` | Inbound playback result. |
 | `InitOutboundAdapterDto` | `application/dtos/adapter_outbound_dtos.py` | `device_index: Optional[int]`, `target_keywords: tuple[str, ...]` | Hardware output configuration. |
-| `PlaybackStreamRequestDto` | `application/dtos/services_dtos.py` | `audio_stream: AsyncIterator[bytes]`, `sample_rate: int`, `channels: int` | Internal service playback request. |
+| `PlaybackStreamRequestDto` | `application/dtos/services_dtos.py` | `audio_stream: AsyncIterator[bytes]`, `sample_rate: int`, `channels: int`, `setup_future: asyncio.Future[PlaybackStreamResponseDto] \| None = None` | Internal service playback request plus optional setup acknowledgement hook. |
 | `PlaybackStreamResponseDto` | `application/dtos/services_dtos.py` | `success: bool`, `message: str` | Internal service playback result. |
 | `SpeakerCleanupResponseDto` | `application/dtos/services_dtos.py` | `success: bool` | Cleanup result. |
 
@@ -897,41 +830,58 @@ Relationships:
 
 - `StartSpeakerStreamRequestDto` maps one-to-one to `PlaybackStreamRequestDto`.
 - `PlaybackStreamResponseDto` maps one-to-one to `StartSpeakerStreamResponseDto`.
-- Audio payloads are streams of `bytes`, not loaded into a single in-memory object by the inbound adapter.
+- HTTP and autoload audio payloads are streamed as `bytes`; `POST /process/stream/set` wraps `request.stream()` in the inbound playback DTO.
 
 Caching strategy:
 
 - No persistent cache.
-- Runtime buffering uses in-memory `asyncio.Queue`.
+- Runtime buffering uses in-memory `asyncio.Queue` inside the outbound playback worker.
+- `POST /process/stream/set` does not buffer the audio request body before passing it to the service.
+- The HTTP adapter waits only for the setup acknowledgement future before returning HTTP `200`; the audio body continues streaming afterward.
 - No bounded queue sizes are configured. **Needs verification:** long producer/slow speaker scenarios may grow memory usage.
 
 ## Configuration
 
-Configuration is loaded from `.env` if present. `.env.example` documents the intended variables.
+Configuration is loaded from VS Code launch configuration and `.env` if present. `.env.example` documents the intended variables.
 
 | Variable | Required | Default | Purpose | Example |
 | --- | --- | --- | --- | --- |
 | `SERVICE_HOST` | No | `127.0.0.1` | Host/IP for Uvicorn to bind. | `127.0.0.1` |
 | `SERVICE_PORT` | No | `8003` | Port for Uvicorn to listen on. Converted to `int`. | `8003` |
+| `APP_ENV` | No | `development` | Runtime environment. Supported values: `development`, `staging`, `production`. | `development` |
+| `VSCODE_ENV` | No | unset | Optional alternate runtime environment variable. `APP_ENV` takes precedence when both are set. | `staging` |
+| `VSCODE_LAUNCH_PROFILE` | No | inferred | Optional launch profile name used when resolving fallback env values from `.vscode/launch.json`. | `Python: Debug (development)` |
 | `SPEAKER_DEVICE_INDEX` | No | empty / `None` | Explicit `sounddevice` output device index. Empty means auto-detect. | `3` |
 | `SPEAKER_DEVICE_KEYWORDS` | No | `i2s,hw,default,sysdefault` | Comma-separated keywords used to auto-select output device by name. | `i2s,hw,default,sysdefault` |
 | `ALLOWED_ORIGINS` | No | `*` | Parsed into inbound adapter config. Intended CORS origins. | `*` |
 | `AUTOLOAD_STREAM_URL` | No | empty / `None` | If set, starts background worker that connects to this HTTP stream and plays bytes. | `http://127.0.0.1:8002/process/stream/get` |
-| `APP_ENV` | No | unset | Only set in `.vscode/launch.json`; not read by application code. | `debug` |
 
 Important configuration notes:
 
+- The checked-in VS Code launch profiles map to environments as follows: `Python: Debug (development)` -> `APP_ENV=development`, `Python: Debug (staging)` -> `APP_ENV=staging`, and `Python: Debug (production)` -> `APP_ENV=production`.
+- Runtime environment resolution precedence is: process environment `APP_ENV`, process environment `VSCODE_ENV`, selected VS Code launch profile `env.APP_ENV`, selected VS Code launch profile `env.VSCODE_ENV`, selected launch profile `envFile` values, then the safe fallback `development`.
+- Launch profile selection uses `VSCODE_LAUNCH_PROFILE` when present. If it is absent and exactly one launch profile targets `main.py`, that profile is used as the fallback source.
+- Invalid environment values are ignored and the resolver continues down the precedence chain. Supported values are `development`, `staging`, and `production`.
 - `ALLOWED_ORIGINS` is parsed and stored in `InitInboundAdapterDto`, but CORS middleware is not registered with `app.add_middleware(...)`. Therefore CORS behavior is currently FastAPI's default, not the configured variable. **Needs verification / technical debt.**
-- `.env` currently includes `AUTOLOAD_STREAM_URL=http://127.0.0.1:8002/process/stream/get`; `.env.example` leaves it empty.
 - No secrets are currently required by the inspected code.
 - If `SERVICE_PORT` or `SPEAKER_DEVICE_INDEX` contain non-integer values, startup will fail with `ValueError`.
+
+Logging behavior:
+
+- Application logs use `runtime.logger.get_logger()` and include timestamp, environment, level, logger scope, and message.
+- `development` shows `trace`, `info`, `warn`, `error`, and `critical`.
+- `staging` shows `warn`, `error`, and `critical`.
+- `production` shows `critical` only.
+- FastAPI/Uvicorn request logs, startup logs, shutdown logs, and server errors are not filtered by the application logger and remain visible in every environment.
+
+To add a new launch profile, copy the existing `.vscode/launch.json` profile, set a unique `name`, set `VSCODE_LAUNCH_PROFILE` to the same name, and set `APP_ENV` to one of `development`, `staging`, or `production`. Adding a new environment requires updating `SUPPORTED_ENVIRONMENTS` and the log-level map in `runtime/`.
 
 Config files:
 
 - `.env`: local runtime config.
 - `.env.example`: template config.
 - `.vscode/settings.json`: points VS Code Python interpreter to `windows/Scripts/python.exe`.
-- `.vscode/launch.json`: debug launch config for `main.py`, env file `.env`, and `APP_ENV=debug`.
+- `.vscode/launch.json`: debug launch config for `main.py`, env file `.env`, and explicit runtime environment values.
 - `requirements.windows.txt`: Python dependency list for Windows.
 - `requirements.linux.txt`: Python dependency list for Linux/Raspberry Pi-style hosts, including a note to install PortAudio/system sound packages first.
 
@@ -1017,15 +967,15 @@ Declared dependencies are identical in `requirements.windows.txt` and `requireme
 
 | Dependency | Purpose | Critical Notes |
 | --- | --- | --- |
-| `fastapi` | HTTP/WebSocket API framework and lifespan support. | Routes are registered imperatively in `FastApiAdapter`. |
+| `fastapi` | HTTP API framework and lifespan support. | Routes are registered imperatively in `FastApiAdapter`. |
 | `uvicorn` | ASGI server. | Configured directly in `setup.py`; keep-alive timeout set to 60 seconds. |
 | `python-dotenv` | Load `.env` configuration. | Uses `find_dotenv('.env')` and `load_dotenv`. |
 | `httpx` | Optional outbound autoload streaming HTTP client. | `AsyncClient(timeout=None)` for long-lived streams. |
 | `sounddevice` | Audio output through PortAudio. | Core hardware dependency; requires working PortAudio/native audio stack. |
 | `soundfile` | Audio/DSP dependency. | Declared but not used by current source code. |
 | `numpy` | Audio/DSP dependency. | Declared but not used by current source code. |
-| `pytest` | Testing/development. | No conventional pytest tests found; `tests/simple.py` is executable script style. |
-| `websockets` | Manual integration test WebSocket client. | Used in `tests/simple.py`. |
+| `pytest` | Testing/development. | Used by `tests/test_stream_contract.py` for inbound HTTP contract coverage. |
+| `websockets` | Legacy/manual test dependency. | Not used by the current FastAPI inbound contract. |
 
 Version constraints:
 
@@ -1051,7 +1001,6 @@ Cache:
 Session management:
 
 - No user sessions.
-- WebSocket connection state is local to each route invocation.
 
 Persistent runtime state:
 
@@ -1081,12 +1030,11 @@ Retry logic:
 - Stream open retry: requested sample rate -> 44100 Hz.
 - Autoload HTTP method fallback: POST -> GET on 405.
 - Autoload reconnect: 5 seconds after `httpx.RequestError` or unexpected exceptions.
-- No retry for inbound HTTP/WebSocket clients.
+- No retry for inbound HTTP clients.
 
 Error handling strategy:
 
-- Inbound HTTP catches exceptions and returns JSON 500.
-- Inbound WebSocket logs disconnects and playback task failures but does not send structured errors to clients.
+- Inbound HTTP returns JSON setup errors before `stream_started`; after setup, request/playback failures are emitted as structured NDJSON `error` events.
 - Application service returns failure DTOs for invalid sample rate/channel count.
 - Outbound adapter logs hardware/write/stream-consumption errors.
 - Autoloader logs errors and stack traces through Python logging, then retries.
@@ -1101,7 +1049,7 @@ Recovery mechanisms:
 
 Authentication:
 
-- None implemented for HTTP endpoints, WebSocket endpoint, or autoload outbound stream.
+- None implemented for HTTP endpoints or autoload outbound stream.
 
 Authorization:
 
@@ -1115,14 +1063,13 @@ Secrets handling:
 Sensitive flows:
 
 - Any client that can reach the service can trigger local speaker playback.
-- Any client that can reach `POST /play/stream` or `WebSocket /play/ws` can stream arbitrary bytes to the audio device.
+- Any client that can reach `POST /process/stream/set` can stream arbitrary bytes to the audio device.
 - The autoloader trusts `AUTOLOAD_STREAM_URL` and plays whatever bytes it returns.
 
 Exposed attack surface:
 
 - `GET /health`: unauthenticated metadata endpoint.
-- `POST /play/stream`: unauthenticated streaming request body. Potential denial-of-service vector through long-lived or high-volume streams.
-- `WebSocket /play/ws`: unauthenticated persistent connection. Potential denial-of-service vector through many connections or high-volume frames.
+- `POST /process/stream/set`: unauthenticated streaming request body. Potential denial-of-service vector through long-lived or high-volume streams.
 - Optional outbound HTTP client: can connect indefinitely to configured URL with no timeout.
 - CORS configuration is currently not active despite the `ALLOWED_ORIGINS` env var.
 
@@ -1130,7 +1077,6 @@ Recommended security hardening for production:
 
 - Add authentication for playback endpoints.
 - Add request size/rate limits or bounded queues.
-- Add client-visible error responses for WebSocket failures.
 - Register CORS middleware if browser clients are intended.
 - Restrict bind host to loopback unless remote clients are required.
 - Validate audio format assumptions explicitly.
@@ -1142,7 +1088,6 @@ Reusable parts:
 - Ports-and-adapters package layout.
 - DTO boundary mapping pattern.
 - FastAPI route adapter wrapping incoming byte streams as `AsyncIterator[bytes]`.
-- WebSocket binary-frame-to-async-generator pattern.
 - Lifespan-managed background worker startup/shutdown.
 - `sounddevice.RawOutputStream` adapter for raw PCM playback.
 - Device auto-selection by keyword with default-device fallback.
@@ -1159,9 +1104,9 @@ Tightly coupled parts:
 Assumptions to preserve for compatibility:
 
 - Clients send raw PCM byte chunks, not WAV/MP3/Opus containers.
-- WebSocket clients send `"EOF"` as a text frame to end gracefully.
 - Query parameters `sample_rate` and `channels` control playback stream opening.
-- Response envelopes contain `action`, `status`, `status_code`, `message`, `timestamp`, and `data` for HTTP endpoints.
+- Successful stream setup is acknowledged by HTTP `200` plus a `stream_started` event object with `type`, `sequence`, `timestamp`, and `payload`.
+- Clients keep the response stream open while continuing to upload audio in the same HTTP request.
 - Default service port is `8003`.
 - Autoload endpoint, if configured, returns a byte stream compatible with 24000 Hz mono int16 PCM.
 
@@ -1204,19 +1149,18 @@ If rebuilding this project from scratch, what matters most:
 ## Unknowns / Technical Debt
 
 - **Needs verification:** Exact target hardware platform. The dependency keywords (`i2s`, `hw`, `default`, `sysdefault`) and Linux requirement note suggest Linux/Raspberry Pi or embedded speaker hardware, but the current workspace is Windows.
-- **Needs verification:** Audio producer contract for `AUTOLOAD_STREAM_URL`. Current `.env` points to `http://127.0.0.1:8002/process/stream/get`, but that service is not part of this repository.
+- **Needs verification:** Audio producer contract for `AUTOLOAD_STREAM_URL`. The example local stream URL points to `http://127.0.0.1:8002/process/stream/get`, but that service is not part of this repository.
 - **Needs verification:** Whether remote stream bytes are guaranteed to be 24000 Hz mono int16 PCM.
-- **Needs verification:** Whether HTTP playback should return success when the inbound stream read fails after playback starts.
-- **Needs verification:** Whether WebSocket clients need structured error events.
+- **Needs verification:** Whether post-setup playback/write failures should terminate the response with a stronger client-visible error contract.
 - `ALLOWED_ORIGINS` is parsed but not applied to FastAPI middleware.
 - No dependency versions are pinned.
-- No conventional automated unit tests are present.
+- `tests/test_stream_contract.py` provides automated pytest coverage for the inbound HTTP route contract and NDJSON playback events.
 - `tests/simple.py` is a manual integration test that plays audible sound and starts a subprocess; it is not a normal pytest test despite the `tests/` location.
 - No Docker/deployment/CI configuration exists.
-- Console logging is configured in `main.py` with Python `logging.basicConfig(...)`; if `setup()` is reused without `main.py`, callers must configure logging themselves.
+- Application logging is configured in `main.py` through `runtime.logger.configure_logging(...)`; if `setup()` is reused directly, callers should configure logging first.
 - `soundfile` and `numpy` are declared dependencies but not used by application source.
 - `service_to_adapter_outbound.py` mapper is unused.
 - Queue sizes are unbounded.
 - Playback concurrency has no explicit lock around shared adapter state.
-- There is no endpoint to stop playback explicitly except by ending the current stream, disconnecting WebSocket, starting another playback, or shutting down the service.
+- There is no endpoint to stop playback explicitly except by ending the current HTTP/autoload stream, starting another playback, or shutting down the service.
 - There is no readiness endpoint that verifies the selected hardware stream can actually open; `/health` only verifies the HTTP service is alive.

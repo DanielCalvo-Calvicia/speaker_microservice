@@ -72,10 +72,13 @@ async def run_test():
         bufsize=1,
         cwd=project_root
     )
+    if server_process.stdout is None:
+        raise RuntimeError("Server process stdout pipe was not created.")
+    server_stdout = server_process.stdout
     
     # Start a thread to read and print server logs in real-time
     def log_streamer():
-        for line in iter(server_process.stdout.readline, ''):
+        for line in iter(server_stdout.readline, ''):
             sys.stdout.write(f"[Server] {line}")
             sys.stdout.flush()
             
@@ -123,22 +126,35 @@ async def run_test():
 
     # Import websockets inside test loop to prevent import errors at load time
     import websockets
+    from websockets.typing import Origin
     
     uri = f"ws://{host}:{port}/play/ws?sample_rate=44100&channels=1"
     logger.info(f"Connecting to WebSocket: {uri}")
     
     try:
-        async with websockets.connect(uri, origin="http://127.0.0.1:8003") as ws:
+        async with websockets.connect(uri, origin=Origin("http://127.0.0.1:8003")) as ws:
             logger.info("WebSocket connection established! Beginning sound playback...")
             logger.info("🎧 Playing 2 seconds of 440Hz Sine Wave...")
             
+            logger.info(f"Stream event: {json.loads(await ws.recv())}")
+
             chunk_count = 0
             async for chunk in sine_wave_generator(sample_rate=44100, duration=2.0, freq=440.0, channels=1):
                 await ws.send(chunk)
+                event = json.loads(await ws.recv())
+                if event["type"] == "error":
+                    raise RuntimeError(event["payload"]["message"])
                 chunk_count += 1
                 
-            logger.info(f"Sent {chunk_count} chunks. Sending EOF marker.")
-            await ws.send("EOF")
+            logger.info(f"Sent {chunk_count} chunks. Sending end_of_input control event.")
+            await ws.send(json.dumps({"type": "end_of_input", "payload": {}}))
+            while True:
+                event = json.loads(await ws.recv())
+                logger.info(f"Stream event: {event}")
+                if event["type"] == "completed":
+                    break
+                if event["type"] == "error":
+                    raise RuntimeError(event["payload"]["message"])
             
             # Allow time for buffer queue to flush out to sound card
             await asyncio.sleep(2.5)
