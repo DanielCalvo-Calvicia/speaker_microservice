@@ -1,4 +1,5 @@
 import logging
+from typing import Any, cast
 
 from runtime.environment import RuntimeEnvironment, resolve_runtime_environment
 
@@ -7,12 +8,13 @@ TRACE_LEVEL = 5
 logging.addLevelName(TRACE_LEVEL, "TRACE")
 
 
-def _trace(self: logging.Logger, message, *args, **kwargs) -> None:
-    if self.isEnabledFor(TRACE_LEVEL):
-        self._log(TRACE_LEVEL, message, args, **kwargs)
+class TraceLogger(logging.Logger):
+    def trace(self, message: object, *args: Any, **kwargs: Any) -> None:
+        if self.isEnabledFor(TRACE_LEVEL):
+            self._log(TRACE_LEVEL, message, args, **kwargs)
 
 
-logging.Logger.trace = _trace  # type: ignore[attr-defined]
+logging.setLoggerClass(TraceLogger)
 
 
 _PROJECT_LOGGER_PREFIX = "speaker_microservice"
@@ -64,6 +66,6 @@ def configure_logging(environment: RuntimeEnvironment | None = None) -> RuntimeE
     return resolved_environment
 
 
-def get_logger(scope: str) -> logging.Logger:
+def get_logger(scope: str) -> TraceLogger:
     name = scope if scope.startswith(_PROJECT_LOGGER_PREFIX) else f"{_PROJECT_LOGGER_PREFIX}.{scope}"
-    return logging.getLogger(name)
+    return cast(TraceLogger, logging.getLogger(name))

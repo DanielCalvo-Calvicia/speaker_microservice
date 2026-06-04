@@ -16,4 +16,5 @@ def map_inbound_to_service_playback_request(
         audio_stream=request.audio_stream,
         sample_rate=request.sample_rate,
         channels=request.channels,
+        setup_future=request.setup_future,
     )
