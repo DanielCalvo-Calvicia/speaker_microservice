@@ -1,18 +1,19 @@
 import asyncio
-import logging
 import sys
 
 from composition_root.setup.setup import setup
+from runtime.logger import configure_logging, get_logger
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-)
-logger = logging.getLogger("speaker_microservice.main")
+runtime_environment = configure_logging()
+logger = get_logger("main")
 
 if __name__ == "__main__":
     try:
-        logger.info("Speaker microservice process entrypoint reached.")
+        logger.info(
+            "Speaker microservice process entrypoint reached with environment=%s source=%s.",
+            runtime_environment.name,
+            runtime_environment.source,
+        )
         asyncio.run(setup())
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Exiting speaker microservice.")

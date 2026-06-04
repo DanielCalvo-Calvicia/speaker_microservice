@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+import asyncio
 from typing import AsyncIterator
+from application.dtos.services_dtos import PlaybackStreamResponseDto
 
 @dataclass(slots=True, frozen=True)
 class InitInboundAdapterDto:
@@ -14,6 +16,7 @@ class StartSpeakerStreamRequestDto:
     audio_stream: AsyncIterator[bytes]
     sample_rate: int = 24000
     channels: int = 1
+    setup_future: asyncio.Future[PlaybackStreamResponseDto] | None = None
 
 @dataclass(slots=True, frozen=True)
 class StartSpeakerStreamResponseDto:

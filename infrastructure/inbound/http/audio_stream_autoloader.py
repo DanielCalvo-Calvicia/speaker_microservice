@@ -1,27 +1,28 @@
 import asyncio
-import logging
 import httpx
 from typing import AsyncIterator
 
 from application.dtos.adapter_inbound_dtos import StartSpeakerStreamRequestDto
+from application.ports.adapter_inbound_port import AdapterInboundPort
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.infrastructure.inbound.autoloader")
+logger = get_logger("infrastructure.inbound.autoloader")
 
 class AudioStreamAutoloader:
-    def __init__(self, stream_url: str, inbound_adapter):
+    def __init__(self, stream_url: str, inbound_adapter: AdapterInboundPort):
         self.stream_url = stream_url
         self.inbound_adapter = inbound_adapter
-        self._task = None
+        self._task: asyncio.Task[None] | None = None
         logger.info("AudioStreamAutoloader initialized for stream URL: %s", stream_url)
 
-    def start(self):
+    def start(self) -> None:
         if self._task is None or self._task.done():
             logger.info("Starting audio stream autoloader worker task.")
             self._task = asyncio.create_task(self._worker())
         else:
             logger.info("Autoloader start requested, but worker is already running.")
 
-    async def stop(self):
+    async def stop(self) -> None:
         if self._task and not self._task.done():
             logger.info("Stopping audio stream autoloader worker task.")
             self._task.cancel()
@@ -34,15 +35,19 @@ class AudioStreamAutoloader:
         else:
             logger.info("Autoloader stop requested, but no active worker task exists.")
 
-    async def _worker(self):
+    async def _worker(self) -> None:
         method = "POST"
         while True:
             try:
                 logger.info("Connecting to audio stream at %s via %s.", self.stream_url, method)
                 # We use timeout=None to allow an infinitely long stream
                 async with httpx.AsyncClient(timeout=None) as client:
-                    kwargs = {"json": {}} if method == "POST" else {}
-                    async with client.stream(method, self.stream_url, **kwargs) as response:
+                    stream_context = (
+                        client.stream(method, self.stream_url, json={})
+                        if method == "POST"
+                        else client.stream(method, self.stream_url)
+                    )
+                    async with stream_context as response:
                         if response.status_code == 405 and method == "POST":
                             logger.warning("Autoload method %s not allowed. Falling back to GET.", method)
                             method = "GET"

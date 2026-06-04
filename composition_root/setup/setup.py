@@ -1,18 +1,26 @@
 import asyncio
-import logging
 import os
 import uvicorn
 from dotenv import load_dotenv, find_dotenv
 
 from composition_root.containers.container import BuildContainer, Container
+from runtime.environment import resolve_runtime_environment
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.setup")
+logger = get_logger("setup")
 
 async def _cleanup(container: Container):
     logger.info("Performing final setup-layer cleanup for container: %s", container)
     # Cleanups are registered in FastAPI lifespan, but can be added here if needed
 
 async def setup():
+    runtime_environment = resolve_runtime_environment()
+    logger.info(
+        "Resolved runtime environment: environment=%s source=%s.",
+        runtime_environment.name,
+        runtime_environment.source,
+    )
+
     # Load environment variables
     dotenv_path = find_dotenv('.env')
     if dotenv_path:

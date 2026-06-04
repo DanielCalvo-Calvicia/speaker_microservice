@@ -1,19 +1,18 @@
 import sounddevice as sd
 import asyncio
-import logging
-from typing import Optional
 from application.ports.adapter_outbound_port import AdapterOutboundPort
 from application.dtos.adapter_outbound_dtos import InitOutboundAdapterDto
 from application.dtos.services_dtos import PlaybackStreamRequestDto, PlaybackStreamResponseDto, SpeakerCleanupResponseDto
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.infrastructure.outbound")
+logger = get_logger("infrastructure.outbound")
 
 class SoundDeviceSpeakerAdapter(AdapterOutboundPort):
     def __init__(self, config: InitOutboundAdapterDto):
         self.config = config
-        self.device_index: Optional[int] = None
-        self.stream: Optional[sd.RawOutputStream] = None
-        self._playback_task: Optional[asyncio.Task] = None
+        self.device_index: int | None = None
+        self.stream: sd.RawOutputStream | None = None
+        self._playback_task: asyncio.Task[None] | None = None
         self._is_playing: bool = False
         logger.info(
             "Initializing SoundDeviceSpeakerAdapter: configured_device_index=%s target_keywords=%s",
@@ -48,7 +47,7 @@ class SoundDeviceSpeakerAdapter(AdapterOutboundPort):
                 max_output = int(info.get("max_output_channels", 0))
                 
                 if max_output > 0:
-                    logger.debug(f"Device ID {i} candidate: '{name}' Channels: {max_output}")
+                    logger.trace("Device ID %s candidate: '%s' Channels: %s", i, name, max_output)
                     if any(kw.lower() in name.lower() for kw in keywords):
                         logger.info(f"Auto-selected device ID {i}: '{name}' based on keywords.")
                         return i
@@ -119,14 +118,18 @@ class SoundDeviceSpeakerAdapter(AdapterOutboundPort):
             self._open_device_stream(request.sample_rate, request.channels)
         except Exception as e:
             logger.error(f"Failed to open hardware device: {e}")
-            return PlaybackStreamResponseDto(success=False, message=f"Hardware stream open failure: {e}")
+            response = PlaybackStreamResponseDto(success=False, message=f"Hardware stream open failure: {e}")
+            if request.setup_future is not None and not request.setup_future.done():
+                request.setup_future.set_result(response)
+            return response
 
-        queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._is_playing = True
         queued_chunks = 0
         queued_bytes = 0
         written_chunks = 0
         written_bytes = 0
+        stream_error: Exception | None = None
 
         async def _audio_player_worker() -> None:
             """Background worker consuming raw bytes and writing them via OS calls."""
@@ -163,6 +166,8 @@ class SoundDeviceSpeakerAdapter(AdapterOutboundPort):
         # Bootstrap non-blocking player
         self._playback_task = asyncio.create_task(_audio_player_worker())
         logger.info("Outbound playback worker task created.")
+        if request.setup_future is not None and not request.setup_future.done():
+            request.setup_future.set_result(PlaybackStreamResponseDto(success=True, message="Playback stream started"))
 
         try:
             # Consume incoming generator stream and feed playback queue
@@ -175,7 +180,12 @@ class SoundDeviceSpeakerAdapter(AdapterOutboundPort):
                     queued_bytes += len(chunk)
                     await queue.put(chunk)
         except Exception as e:
-            logger.error(f"Error consuming inbound audio generator stream: {e}")
+            stream_error = e
+            logger.error(
+                "Error consuming inbound audio generator stream: type=%s message=%r",
+                type(e).__name__,
+                str(e),
+            )
         finally:
             logger.info(
                 "Finished consuming inbound audio stream: queued_chunks=%s queued_bytes=%s",
@@ -199,6 +209,8 @@ class SoundDeviceSpeakerAdapter(AdapterOutboundPort):
             written_chunks,
             written_bytes,
         )
+        if stream_error is not None:
+            return PlaybackStreamResponseDto(success=False, message=str(stream_error))
         return PlaybackStreamResponseDto(success=True, message="Playback session finalized successfully")
 
     async def cleanup_playback_task(self) -> None:

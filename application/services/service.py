@@ -1,10 +1,9 @@
-import logging
-
 from application.ports.service_port import SpeakerServicePort
 from application.ports.adapter_outbound_port import AdapterOutboundPort
 from application.dtos.services_dtos import PlaybackStreamRequestDto, PlaybackStreamResponseDto, SpeakerCleanupResponseDto
+from runtime.logger import get_logger
 
-logger = logging.getLogger("speaker_microservice.application.service")
+logger = get_logger("application.service")
 
 class SpeakerService(SpeakerServicePort):
     def __init__(self, outbound_port: AdapterOutboundPort):
@@ -20,10 +19,16 @@ class SpeakerService(SpeakerServicePort):
         )
         if request.sample_rate <= 0:
             logger.warning("Rejecting playback request with invalid sample rate: %s", request.sample_rate)
-            return PlaybackStreamResponseDto(success=False, message="Invalid sample rate. Must be positive.")
+            response = PlaybackStreamResponseDto(success=False, message="Invalid sample rate. Must be positive.")
+            if request.setup_future is not None and not request.setup_future.done():
+                request.setup_future.set_result(response)
+            return response
         if request.channels <= 0:
             logger.warning("Rejecting playback request with invalid channel count: %s", request.channels)
-            return PlaybackStreamResponseDto(success=False, message="Invalid channel count. Must be positive.")
+            response = PlaybackStreamResponseDto(success=False, message="Invalid channel count. Must be positive.")
+            if request.setup_future is not None and not request.setup_future.done():
+                request.setup_future.set_result(response)
+            return response
         
         logger.info("Playback request validated. Forwarding to outbound adapter.")
         response = await self.outbound_port.play_stream(request)
