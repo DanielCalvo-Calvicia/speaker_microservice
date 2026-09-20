@@ -1,0 +1,127 @@
+"""Background task that keeps playing an external audio stream through the speaker."""
+
+import asyncio
+import random
+from collections.abc import AsyncIterator
+
+import httpx
+from shared_logging import async_event_hooks, get_logger, span
+
+from application.dtos.play_stream_inbound import PlayStreamInboundDTO
+from application.ports.inbound.speaker_playback_port import SpeakerPlaybackPort
+
+logger = get_logger(__name__)
+
+_BASE_BACKOFF = 1.0
+_MAX_BACKOFF = 60.0
+_AUTOLOAD_SAMPLE_RATE = 24000
+_AUTOLOAD_CHANNELS = 1
+
+
+class AudioStreamAutoloader:
+    def __init__(self, stream_url: str, port: SpeakerPlaybackPort) -> None:
+        self.stream_url = stream_url
+        self._port = port
+        self._task: asyncio.Task[None] | None = None
+        logger.info("AudioStreamAutoloader initialized", stream_url=stream_url)
+
+    def start(self) -> None:
+        if self._task is None or self._task.done():
+            logger.info("Starting audio stream autoloader worker task")
+            self._task = asyncio.create_task(self._worker())
+        else:
+            logger.info("Autoloader start requested, but worker is already running")
+
+    async def stop(self) -> None:
+        if self._task and not self._task.done():
+            logger.info("Stopping audio stream autoloader worker task")
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                logger.info("Autoloader worker task cancelled")
+            self._task = None
+        else:
+            logger.info("Autoloader stop requested, but no active worker task exists")
+
+    async def _worker(self) -> None:
+        method = "POST"
+        backoff = _BASE_BACKOFF
+        while True:
+            with span("autoload audio stream", kind="client"):
+                try:
+                    logger.info(
+                        "Connecting to audio stream",
+                        stream_url=self.stream_url,
+                        method=method,
+                    )
+                    # timeout=None allows an infinitely long stream
+                    async with httpx.AsyncClient(
+                        timeout=None, event_hooks=async_event_hooks()
+                    ) as client:
+                        stream_context = (
+                            client.stream(method, self.stream_url, json={})
+                            if method == "POST"
+                            else client.stream(method, self.stream_url)
+                        )
+                        async with stream_context as response:
+                            if response.status_code == 405 and method == "POST":
+                                logger.warning(
+                                    "Autoload method not allowed; falling back to GET",
+                                    method=method,
+                                )
+                                method = "GET"
+                                continue
+
+                            response.raise_for_status()
+                            logger.info("Autoload stream connected", stream_url=self.stream_url)
+                            backoff = _BASE_BACKOFF  # reset on successful connection
+                            chunk_count = 0
+                            total_bytes = 0
+
+                            async def stream_generator(
+                                response: httpx.Response = response,
+                            ) -> AsyncIterator[bytes]:
+                                nonlocal chunk_count, total_bytes
+                                async for chunk in response.aiter_bytes():
+                                    if chunk:
+                                        chunk_count += 1
+                                        total_bytes += len(chunk)
+                                    yield chunk
+
+                            result = await self._port.play(
+                                PlayStreamInboundDTO(
+                                    audio_stream=stream_generator(),
+                                    sample_rate=_AUTOLOAD_SAMPLE_RATE,
+                                    channels=_AUTOLOAD_CHANNELS,
+                                )
+                            )
+                            logger.info(
+                                "Autoload playback completed",
+                                success=result.success,
+                                message=result.message,
+                                chunks=chunk_count,
+                                bytes=total_bytes,
+                            )
+
+                except httpx.RequestError as error:
+                    sleep_time = backoff + random.uniform(0, 1)
+                    logger.warning(
+                        "Autoload connection error; reconnecting",
+                        error=error,
+                        sleep_time=sleep_time,
+                    )
+                    await asyncio.sleep(sleep_time)
+                    backoff = min(backoff * 2, _MAX_BACKOFF)
+                except asyncio.CancelledError:
+                    logger.info("Autoloader worker cancelled")
+                    break
+                except Exception as error:
+                    sleep_time = backoff + random.uniform(0, 1)
+                    logger.exception(
+                        "Autoloader unexpected error; reconnecting",
+                        error=error,
+                        sleep_time=sleep_time,
+                    )
+                    await asyncio.sleep(sleep_time)
+                    backoff = min(backoff * 2, _MAX_BACKOFF)
