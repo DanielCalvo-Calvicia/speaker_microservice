@@ -2,7 +2,7 @@
 
 Port **8003**. Python/FastAPI. Plays raw PCM16 audio on the local output device (`sounddevice`/PortAudio). Status: working, needs retest after recent changes. See `README.md` and `../CLAUDE.md`.
 
-Current state (2026-10-01): branch `feature_ai_claude_2` (tracks `origin/feature_ai_claude_2`, in sync), working tree clean, last commit `0fe580b` "Bundle contracts 0.9.0" (the feature commit is `eacddae`, 2026-09-20). Tests: `84 passed`. Real playback on a device was not run in the last documentation pass; ruff (microphone venv) reports 8 findings here, unfixed.
+Current state (2026-10-01): branch `feature_ai_claude_2` (tracks `origin/feature_ai_claude_2`, in sync), working tree clean, last feature commit `673b9ff` "Bundle contracts 0.10.0; refresh docs..." (pushed; the speaker feature commit is `eacddae`, 2026-09-20). Tests: `84 passed`. Real playback on a device was not run in the last documentation pass; ruff (microphone venv) reports 8 findings here, unfixed.
 
 ## Role
 
