@@ -1,6 +1,7 @@
 """SoundDeviceAudioPlayback and DeviceSelector against a fake ``AudioDriver``; no hardware."""
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -8,6 +9,9 @@ import pytest
 from application.dtos.playback_outbound import PlaybackOutboundDTO
 from application.errors import SpeakerUnavailable
 from domain.value_objects.playback_format import PlaybackFormat
+from infrastructure.outbound.sounddevice_playback import (
+    sounddevice_audio_playback as playback_module,
+)
 from infrastructure.outbound.sounddevice_playback.audio_driver import DeviceInfo
 from infrastructure.outbound.sounddevice_playback.sounddevice_audio_playback import (
     SoundDeviceAudioPlayback,
@@ -304,3 +308,77 @@ def test_a_new_play_supersedes_the_running_one():
         assert second.message == "Playback session finalized successfully"
 
     asyncio.run(run())
+
+
+# ---- the end of a playback: a reply longer than the old 3 s limit must be played in full (R-6) -------------
+
+
+class RealTimeOutput(FakeRawOutput):
+    """A device that takes as long to play a chunk as the chunk lasts (24 kHz mono PCM16, 48,000 bytes a second)."""
+
+    def write(self, data: bytes) -> Any:
+        time.sleep(len(data) / 48000)
+        super().write(data)
+
+
+class RealTimeDriver(FakeDriver):
+    def open_output(self, index: int, audio_format: PlaybackFormat) -> FakeRawOutput:
+        self.opened.append((index, audio_format))
+        stream = RealTimeOutput()
+        self.streams.append(stream)
+        return stream
+
+
+def _half_seconds(count: int) -> list[bytes]:
+    """``count`` chunks of 0.5 s of audio: the whole reply is handed over at once, like tts does (faster than real time)."""
+    return [b"\x10\x00" * 12000 for _ in range(count)]
+
+
+def test_a_reply_longer_than_the_old_three_second_limit_is_played_in_full():
+    async def run() -> None:
+        driver = RealTimeDriver()
+        chunks = _half_seconds(7)  # 3.5 s: the old fixed 3 s wait cut this reply off after 3 s
+
+        result = await make_playback(driver).play(FORMAT, _audio(*chunks), lambda _: None)
+
+        assert result == PlaybackOutboundDTO(True, "Playback session finalized successfully")
+        assert sum(len(c) for c in driver.streams[0].written) == sum(len(c) for c in chunks)
+
+    asyncio.run(run())
+
+
+def test_a_device_that_never_finishes_does_not_hold_the_session_forever(monkeypatch):
+    class StuckOutput(FakeRawOutput):
+        def write(self, data: bytes) -> Any:
+            time.sleep(1.2)
+
+    class StuckDriver(FakeDriver):
+        def open_output(self, index: int, audio_format: PlaybackFormat) -> FakeRawOutput:
+            stream = StuckOutput()
+            self.streams.append(stream)
+            return stream
+
+    monkeypatch.setattr(playback_module, "_DRAIN_MARGIN_SECONDS", 0.2)
+
+    async def run() -> None:
+        started = time.monotonic()
+        result = await make_playback(StuckDriver()).play(FORMAT, _audio(*_half_seconds(1)), lambda _: None)
+
+        assert result.success is True  # the existing behaviour: a truncated playback is logged, not failed
+        assert time.monotonic() - started < 2.0  # bounded by the audio's own duration (0.5 s) plus the margin
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("queued_bytes", "sample_rate", "channels", "seconds"),
+    [(0, 24000, 1, 0.0), (48000, 24000, 1, 1.0), (343068, 24000, 1, 343068 / 48000), (176400, 44100, 2, 1.0), (96000, 24000, 2, 1.0)],
+)
+def test_the_drain_wait_is_the_duration_of_the_queued_audio_plus_a_margin(queued_bytes, sample_rate, channels, seconds):
+    timeout = playback_module._drain_timeout_seconds(queued_bytes, PlaybackFormat(sample_rate=sample_rate, channels=channels))
+
+    assert timeout == pytest.approx(seconds + playback_module._DRAIN_MARGIN_SECONDS)
+
+
+def test_the_margin_is_a_real_allowance_for_the_device_latency():
+    assert 1.0 <= playback_module._DRAIN_MARGIN_SECONDS <= 10.0

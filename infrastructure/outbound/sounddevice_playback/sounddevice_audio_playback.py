@@ -27,7 +27,21 @@ from infrastructure.outbound.sounddevice_playback.sounddevice_device_selector im
 logger = get_logger(__name__)
 
 _QUEUE_POLL_SECONDS = 0.1
-_DRAIN_TIMEOUT_SECONDS = 3.0
+# Added to the duration of the queued audio: the device's own buffering and a slow start.
+_DRAIN_MARGIN_SECONDS = 2.0
+_BYTES_PER_SAMPLE = 2  # PCM16
+
+
+def _drain_timeout_seconds(queued_bytes: int, audio_format: PlaybackFormat) -> float:
+    """How long the end of a session may wait for the device to play what was queued.
+
+    A sender faster than real time (tts is) hands over the whole reply at once, so when its stream
+    ends the device may still have to play nearly all of it. The duration of everything queued is an
+    upper bound of what is left (the device has been playing it since the start): the wait always
+    ends, even when the device stalls, and never cuts a reply that is playing normally.
+    """
+    bytes_per_second = audio_format.sample_rate * audio_format.channels * _BYTES_PER_SAMPLE
+    return queued_bytes / bytes_per_second + _DRAIN_MARGIN_SECONDS
 
 
 class SoundDeviceAudioPlayback(AudioPlaybackPort):
@@ -126,10 +140,17 @@ class SoundDeviceAudioPlayback(AudioPlaybackPort):
             if not superseded:
                 await queue.put(None)
                 try:
-                    await asyncio.wait_for(queue.join(), timeout=_DRAIN_TIMEOUT_SECONDS)
+                    await asyncio.wait_for(
+                        queue.join(),
+                        timeout=_drain_timeout_seconds(counters.queued_bytes, audio_format),
+                    )
                     logger.info("Playback queue drained successfully")
                 except TimeoutError:
-                    logger.warning("Playback queue cleanup timed out; truncating")
+                    logger.warning(
+                        "Playback queue cleanup timed out; truncating",
+                        queued_bytes=counters.queued_bytes,
+                        written_bytes=counters.written_bytes,
+                    )
                 self._is_playing = False
                 self._current_session = None
 
