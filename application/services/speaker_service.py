@@ -1,20 +1,20 @@
 from shared_logging import get_logger
 
-from application.dtos.play_stream_inbound import PlayStreamInboundDTO
-from application.dtos.playback_outbound import PlaybackOutboundDTO
-from application.dtos.readiness_outbound import ReadinessOutboundDTO
-from application.ports.inbound.speaker_playback_port import SpeakerPlaybackPort
-from application.ports.outbound.audio_playback_port import AudioPlaybackPort
+from application.dtos.inbound.play_stream_inbound import PlayStreamInboundDTO
+from application.dtos.outbound.playback_outbound import PlaybackOutboundDTO
+from application.dtos.outbound.readiness_outbound import ReadinessOutboundDTO
+from application.ports.outbound.speaker_outbound_port import SpeakerOutboundPort
+from application.ports.service.speaker_service_port import SpeakerServicePort
 from domain.errors import InvalidPlaybackFormat
 from domain.value_objects.playback_format import PlaybackFormat
 
 logger = get_logger(__name__)
 
 
-class SpeakerService(SpeakerPlaybackPort):
+class SpeakerService(SpeakerServicePort):
     """Orchestrates the speaker use cases. Business rules live in the domain."""
 
-    def __init__(self, playback: AudioPlaybackPort, name: str = "Speaker") -> None:
+    def __init__(self, playback: SpeakerOutboundPort, name: str = "Speaker") -> None:
         self.name = name
         self._playback = playback
         logger.info("SpeakerService initialized", name=name)

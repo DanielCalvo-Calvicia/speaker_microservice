@@ -14,3 +14,5 @@ One playback at a time. A new request cleans up the running session (its worker 
 
 - Positive: an interruption is immediate; no queue of utterances to manage here.
 - Negative: any caller can interrupt the speech (R-8); the audio queued but not yet played by the superseded session is dropped.
+
+> **Update 2026-11-10:** found on the real device (T-01.7): a playback replaced while it was still draining its queue did not end at once (its worker had been cancelled, so the drain never finished) and its end reset the state of the newer playback. It now ends as soon as it is replaced, with the message above, and leaves the shared state alone (`_wait_for_drain`, register R-17).

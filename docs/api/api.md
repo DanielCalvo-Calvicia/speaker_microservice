@@ -25,7 +25,7 @@ Another method on a known path answers `405`; an unknown path `404` (FastAPI def
 | `/ready` | `check_readiness` | `{"is_ready": bool, "pending_reason": str or null}` |
 | `/available` | `check_availability` | `{"is_available": bool, "reason": str or null}` |
 
-`/ready` and `/available` are always `200`: a device that cannot be used is `is_ready` / `is_available` false with the reason (`Selected device has no output channels.` or the error of the driver), not a `5xx`. The reason is `null` when the device is usable. The probes run the driver call in a thread (`asyncio.to_thread`).
+`/ready` and `/available` are always `200`: a device that cannot be used is `is_ready` / `is_available` false with the reason (`Selected device has no output channels.` or the error of the driver), not a `5xx`. The reason is `null` when the device is usable on a real backend. With `SPEAKER_BACKEND=null` `/available` answers `is_available: true` and `reason` is `"null sink (SPEAKER_BACKEND=null): audio is discarded, nothing is played"` (ADR-012; the deployment tool prints it as `healthy and available, warning: ...`); `/ready` then says `is_ready: true` and `pending_reason: null`, because a ready service has nothing pending. The probes run the driver call in a thread (`asyncio.to_thread`).
 
 An unreachable output device at **start-up** is different: the process does not start at all (see [risks](../risks/risks-and-debt.md), R-1), so these routes never answer in that case.
 
@@ -91,5 +91,5 @@ The `message` of `completed` is `Playback session finalized successfully`, or `P
 
 - **A new request supersedes a running one.** The running playback stops consuming its audio and finishes with `completed` and the superseded message; the new one opens the device. There is one device and one playback at a time.
 - **Device rate.** If the device refuses the requested rate, it is reopened at 44.1 kHz and the audio is resampled to that rate (linear interpolation, `domain/operations/resample.py`); a warning is logged. The events still announce the requested rate.
-- **End of the audio.** After the body ends the service waits at most 3 seconds for the queued audio to be written; what is still queued after that is dropped (`Playback queue cleanup timed out; truncating` in the log). See [risks](../risks/risks-and-debt.md), R-6.
+- **End of the audio.** After the body ends the service waits for the device to play what is queued, at most the duration of the queued audio plus 2 s (it was a fixed 3 s until 2026-11-09). If that bound is hit (a stalled device) what is still queued is dropped (`Playback queue cleanup timed out; truncating` in the log) and the playback ends with `success: false` and the message `Playback did not finish: the device played X of Y bytes before the wait ran out`, which the handler sends as an `error` event with the code `playback_failed` (until 2026-11-10 it answered `success: true`). The null backend takes the duration of the audio, the same way, and never fails this way. See [risks](../risks/risks-and-debt.md), R-6.
 - **Shutdown.** The playback is stopped and the device released on SIGINT or SIGTERM.

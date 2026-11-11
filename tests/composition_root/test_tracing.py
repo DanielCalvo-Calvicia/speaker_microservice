@@ -3,9 +3,9 @@ from fastapi.testclient import TestClient
 from shared_logging.testing import capture
 
 from composition_root.containers import http_container
-from composition_root.dependencies import speaker_dependencies
 from infrastructure.config.server_config import ServerConfig
 from infrastructure.config.speaker_config import SpeakerConfig
+from infrastructure.outbound.sounddevice_playback import sounddevice_driver
 from infrastructure.outbound.sounddevice_playback.audio_driver import DeviceInfo
 
 TRACE_ID = "0af7651916cd43dd8448eb211c80319c"
@@ -28,7 +28,7 @@ class FakeDriver:
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(speaker_dependencies, "SoundDeviceDriver", FakeDriver)
+    monkeypatch.setattr(sounddevice_driver, "SoundDeviceDriver", FakeDriver)
     container = http_container.new_http_container(
         ServerConfig.from_env({}), SpeakerConfig.from_env({})
     )

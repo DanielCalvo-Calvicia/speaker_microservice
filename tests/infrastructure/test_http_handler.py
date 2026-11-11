@@ -7,15 +7,14 @@ import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from application.dtos.play_stream_inbound import PlayStreamInboundDTO
-from application.dtos.playback_outbound import PlaybackOutboundDTO
-from application.dtos.readiness_outbound import ReadinessOutboundDTO
-from application.ports.inbound.speaker_playback_port import SpeakerPlaybackPort
+from application.dtos.inbound.play_stream_inbound import PlayStreamInboundDTO
+from application.dtos.outbound.playback_outbound import PlaybackOutboundDTO
+from application.dtos.outbound.readiness_outbound import ReadinessOutboundDTO
+from application.ports.service.speaker_service_port import SpeakerServicePort
 from infrastructure.inbound.http.http_handler import SpeakerHandler
 
 
-
-class FakeSpeakerService(SpeakerPlaybackPort):
+class FakeSpeakerService(SpeakerServicePort):
     def __init__(self, success: bool = True, message: str = "ok"):
         self.success = success
         self.message = message
@@ -462,3 +461,23 @@ def test_available_probes_the_output_device_not_the_playback_state():
 
     assert ok == {"is_available": True, "reason": None}
     assert down == {"is_available": False, "reason": "Selected device has no output channels."}
+
+
+def test_ready_says_what_is_pending_only_when_the_device_is_not_ready():
+    class NoDevice(FakeSpeakerService):
+        async def check_readiness(self):
+            return ReadinessOutboundDTO(is_ready=False, message="Selected device has no output channels.")
+
+    class ReadyWithANote(FakeSpeakerService):
+        async def check_readiness(self):
+            return ReadinessOutboundDTO(is_ready=True, message="null sink: audio is discarded")
+
+    down = build_client(NoDevice()).get("/ready").json()["data"]
+    noted = build_client(ReadyWithANote()).get("/ready").json()["data"]
+    plain = build_client(FakeSpeakerService()).get("/ready").json()["data"]
+
+    assert down == {"is_ready": False, "pending_reason": "Selected device has no output channels."}
+    assert noted == {"is_ready": True, "pending_reason": None}  # the note is for /available, nothing is pending
+    assert plain == {"is_ready": True, "pending_reason": None}
+    note_on_available = build_client(ReadyWithANote()).get("/available").json()["data"]
+    assert note_on_available == {"is_available": True, "reason": "null sink: audio is discarded"}

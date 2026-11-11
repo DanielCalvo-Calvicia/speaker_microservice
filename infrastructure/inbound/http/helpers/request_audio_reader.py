@@ -4,7 +4,10 @@ from fastapi import Request
 from shared_logging import get_logger
 from starlette.requests import ClientDisconnect
 
-from infrastructure.inbound.http.ndjson_audio_decoder import NdjsonAudioDecoder, NdjsonInputError
+from infrastructure.inbound.http.helpers.ndjson_audio_decoder import (
+    NdjsonAudioDecoder,
+    NdjsonInputError,
+)
 
 logger = get_logger(__name__)
 

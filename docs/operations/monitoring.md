@@ -43,6 +43,15 @@ The logs never hold the audio: only its counts. They do hold the address of the 
 ## Not present
 
 - Metrics and alerting: none. Tracing is the shared package's span and log correlation only; no exporter is configured here.
-- Which backend is active: `/available` has no field for it (R-4).
+- Which backend is active: with `SPEAKER_BACKEND=null` `/available` carries the note `null sink (SPEAKER_BACKEND=null): audio is discarded, nothing is played` in its `reason` and the service logs **one warning at start**, `Speaker backend is null: audio is discarded` (nothing new for `real`). Brain reads the `reason` only when `is_available` is false, so Brain itself does not show it (R-4, closed 2026-11-10).
+- A playback that hits the drain bound ends with `success: false` and the warning `Playback queue cleanup timed out; truncating` (`queued_bytes`, `written_bytes`); the null backend logs `Null playback session finalized` with the counts.
 - Files on disk: the service writes none.
 - Rate limiting and playback queueing: one playback at a time; a new request supersedes the running one.
+
+## Stop with a playback in flight (R-16, fixed 2026-11-10)
+
+On SIGTERM (`docker stop`, Ctrl+C) uvicorn waits `GRACEFUL_SHUTDOWN_SECONDS` = 5 s for open requests, such as a playback, and then cancels them (it logs `Cancel 1 running task(s), timeout graceful shutdown exceeded` and an ERROR line for the cancelled request); the sender gets an incomplete read, then `Shutting down: releasing the speaker` and `Server stopped; releasing speaker` are logged. Before the fix a playback in flight made `docker stop` wait for the playback or for Docker's 10 s grace period.
+
+## Supersession while draining (R-17, 2026-11-10)
+
+A playback that is replaced after its whole body was queued logs `Playback session superseded while draining` and ends with "Playback session superseded by new request" (success), without the `Playback queue cleanup timed out; truncating` warning, which stays for a device that really stalls.

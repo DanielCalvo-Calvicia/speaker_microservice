@@ -15,3 +15,5 @@ The services of OBLIVION are small and were written one by one with different la
 
 - Positive: no hardware needed for the 84 tests; the hardware can be replaced (a null sink, FR-15) by a new adapter without touching the application.
 - Negative: `sounddevice_driver.py` is still imported at module level by the composition root, so a machine without PortAudio cannot start the service (R-2).
+
+> **Update 2026-11-11:** the layout was aligned with `stt_microservice`. The application layer now owns three ports: `SpeakerInboundPort` (what every inbound adapter offers), `SpeakerServicePort` (the service's own port; it was `SpeakerPlaybackPort`) and `SpeakerOutboundPort` (what the service needs from an output device; it was `AudioPlaybackPort`). DTOs live in `application/dtos/inbound` and `application/dtos/outbound`, and `tests/architecture/test_dtos.py` and `test_ports.py` enforce this next to the dependency rule. Behaviour and the wire format did not change.

@@ -10,10 +10,6 @@ from contracts.stream.codec import EventSequencer, NdjsonDecoder, encode_ndjson
 from contracts.stream.common.base import EventType
 from contracts.stream.common.error import ErrorEvent, ErrorEventDTO
 from contracts.stream.common.heartbeat import HeartbeatEvent
-from contracts.stream.microservices.speaker.inbound.stream_started import (
-    SpeakerStreamStartedInboundEvent,
-    SpeakerStreamStartedInboundEventDTO,
-)
 from contracts.stream.microservices.speaker.inbound.completed import (
     SpeakerCompletedInboundEvent,
     SpeakerCompletedInboundEventDTO,
@@ -22,10 +18,13 @@ from contracts.stream.microservices.speaker.inbound.partial import (
     SpeakerPartialInboundEvent,
     SpeakerPartialInboundEventDTO,
 )
+from contracts.stream.microservices.speaker.inbound.stream_started import (
+    SpeakerStreamStartedInboundEvent,
+    SpeakerStreamStartedInboundEventDTO,
+)
 from contracts.stream.schemas import SPEAKER_OUTBOUND
 
 from tests.infrastructure.test_http_handler import FakeSpeakerService, build_client, post_ndjson
-
 
 STARTED = (
     SpeakerStreamStartedInboundEvent,

@@ -22,9 +22,11 @@ Working, needs a hardware retest. The service and its tests are built and pass; 
 | `/health`, `/ready`, `/available` | Implemented |
 | Authentication | **None**, on purpose (a common scheme for all services is planned) |
 | Real playback on a device (`tests/simple.py`), Docker with `/dev/snd` | **Not run** |
-| A `null` sink backend for machines without a sound card; the active backend in `/available` | Proposed, not built |
+| A `null` sink backend for machines without a sound card; the active backend in `/available` | Built 2026-11-10 ([ADR-012](docs/decisions/ADR-012-null-backend.md), T-01.2 to T-01.4): `SPEAKER_BACKEND=real\|null`, code default `real`. Run as the real service, through the pipeline check and in Docker on amd64 on `null` (2026-11-10, T-03) |
+| The runtime requirements without dev tools or unused packages, exact pins | Built 2026-11-10 (T-01.5): `requirements.dev.txt` holds the tools |
+| A playback that hits the drain bound answers `success: false` | Built 2026-11-10 (T-01.6) |
 
-92 tests pass (2026-11-09; 84 on 2026-11-05), all with a fake driver. `ruff`, `mypy` and `black` are configured in `pyproject.toml` but not installed in this venv.
+132 tests pass (2026-11-11, after the layout was aligned with stt; 120 on 2026-11-10, 92 on 2026-11-09, 84 on 2026-11-05), all with a fake driver or the null sink. `ruff`, `mypy` and `black` are configured in `pyproject.toml` but not installed in this venv.
 
 ## Run
 
@@ -36,7 +38,7 @@ Working, needs a hardware retest. The service and its tests are built and pass; 
 windows/bin/python main.py                  # Linux / Raspberry Pi: the venv folder keeps its name
 ```
 
-Install with `pip install -r requirements.windows.txt` (or `requirements.linux.txt`; Linux needs `libportaudio2` and `portaudio19-dev` first). Settings come from the environment; a `.env` file is loaded if present (template: [.env.example](.env.example)). The default bind address is `127.0.0.1`; set `SERVICE_HOST` (for example `0.0.0.0`) when Brain runs on another machine. The service does not start without a usable output device.
+Install with `pip install -r requirements.windows.txt` (or `requirements.linux.txt`; Linux needs `libportaudio2` and `portaudio19-dev` first, only for the real sound card) and, to run the tests, `pip install -r requirements.dev.txt`. Settings come from the environment; a `.env` file is loaded if present (template: [.env.example](.env.example)). The default bind address is `127.0.0.1`; set `SERVICE_HOST` (for example `0.0.0.0`) when Brain runs on another machine. With `SPEAKER_BACKEND=real` (the default) the service does not start without a usable output device, on purpose; `SPEAKER_BACKEND=null` starts anywhere, plays nothing and needs no PortAudio.
 
 ```bash
 curl -s http://127.0.0.1:8003/health
@@ -78,11 +80,11 @@ Audio is never converted between services. Only if the device refuses the reques
 main.py            entry point (calls main_flow)
 main_flow/         config, logging init, uvicorn, graceful shutdown (stops playback)
 composition_root/  the only place concrete adapters are wired together (app, CORS, tracing middleware)
-infrastructure/    config, HTTP (inbound: handler, envelope, error mapper, request reader, NDJSON decoder/encoder) and sounddevice (outbound) adapters
-application/       use-case service, ports, DTOs, application errors
+infrastructure/    config, HTTP (inbound: handler, routes/, response/, errors/, helpers/) and playback (outbound: sounddevice, null) adapters
+application/       use-case service, three ports (service, inbound, outbound), DTOs (inbound/, outbound/), application errors
 domain/            playback format value object, format negotiation, resampler
-tests/             domain, application, infrastructure, composition_root, architecture (pytest) and simple.py (end to end, needs a device)
-vendor/            the bundled contracts wheel (0.15.0); refresh with contracts/scripts/bundle.py
+tests/             domain, application, infrastructure, composition_root, main_flow, architecture (pytest) and simple.py (end to end, needs a device)
+vendor/            the bundled contracts wheel (0.16.0); refresh with contracts/scripts/bundle.py
 docs/              api, architecture, configuration, decisions, deployment, operations, requirements, risks, security
 ```
 
@@ -101,14 +103,16 @@ Real playback on a device was not run in the last passes: it needs an output dev
 
 - **In scope:** play the PCM16 stream Brain sends on the local output device and report how it went as contract events.
 - **Non-goals:** calling other services (Brain is the only coordinator), converting audio between services, authentication of its own (a common scheme comes later), storing audio.
-- **Proposed, not built:** a `null` backend for machines without a sound card; the active backend in `/available`; device choice per machine in the deploy configuration.
+- **Built and run (native, the pipeline check and Docker on amd64 on `null`, 2026-11-10):** the `null` backend and the active backend in `/available` (ADR-012). **Proposed, not built:** device choice per machine in the deploy configuration (the keywords are already per machine in `config/local/speaker.toml`).
 
 ## Known limitations
 
 - Without a usable output device the process does not start, so `/available` never answers false (R-1).
 - `sounddevice` is imported at start-up, so a machine without PortAudio cannot start it either (R-2).
 - On Linux the default keywords can match the wrong ALSA device; set `SPEAKER_DEVICE_INDEX` (R-3).
-- After the body of a request ends the service waits for the device up to the duration of the queued audio plus 2 s. Until 2026-11-09 the wait was a fixed 3 s and a reply longer than about 3 s was cut (R-6, confirmed on a real device: a 7.15 s sentence played for 3 s and the call returned `success: true`); fixed, tested with a fake real-time device and confirmed on the real device on 2026-11-09 (a 7.12 s reply was written in full). If the bound is hit anyway the rest is dropped, logged, and still answered as a success.
+- `docker stop` with a playback in flight ends in about 6 s with exit code 0 since 2026-11-10 (uvicorn cancels open requests after `GRACEFUL_SHUTDOWN_SECONDS` = 5 s and the cleanup runs, R-16); the playback is cut and uvicorn logs the cancelled request as an ERROR line.
+- Retested on the real output device of the Windows PC on 2026-11-10 (T-01.7: `tests/simple.py`, other rates, probes, supersession, release; the resampler was not exercised because the device accepted every rate).
+- After the body of a request ends the service waits for the device up to the duration of the queued audio plus 2 s. Until 2026-11-09 the wait was a fixed 3 s and a reply longer than about 3 s was cut (R-6, confirmed on a real device: a 7.15 s sentence played for 3 s and the call returned `success: true`); fixed, tested with a fake real-time device and confirmed on the real device on 2026-11-09 (a 7.12 s reply was written in full). If the bound is hit anyway (a stalled device) the rest is dropped, logged, and the call is answered `success: false` (`Playback did not finish: ...`; the handler sends a `playback_failed` event), since 2026-11-10.
 - No authentication: whoever reaches the port can play audio and interrupt the speech (R-8).
 
 All of them, with their numbers, are in [docs/risks/risks-and-debt.md](docs/risks/risks-and-debt.md).

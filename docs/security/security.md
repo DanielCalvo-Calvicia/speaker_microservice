@@ -31,5 +31,8 @@ Only what can be verified in the repository. Labels: **Implemented** (in the cod
 
 ## Supply chain
 
-- `contracts` is the vendored wheel `vendor/contracts_microservice-0.15.0-py3-none-any.whl` (refreshed with `contracts/scripts/bundle.py`). `shared-logging` is a local checkout (`-e ../shared-logging`).
-- The runtime requirements files list unpinned packages, including dev tools and packages the code does not import (R-5). No dependency scan is configured.
+- `contracts` is the vendored wheel `vendor/contracts_microservice-0.16.0-py3-none-any.whl` (refreshed with `contracts/scripts/bundle.py`). `shared-logging` is a local checkout (`-e ../shared-logging`).
+- Since 2026-11-10 (T-01.5) the runtime requirements pin the four packages the service imports to exact versions and the tools are in `requirements.dev.txt`; `numpy`, `soundfile` and `websockets` were removed (nothing imports them). The packages those depend on are not locked. No dependency scan is configured.
+- A null backend is not a security feature: it discards the audio it is given and keeps none, and `/available` says so in its `reason`. The operational risk it adds is that the deploy catalogue presets `null`, so a machine with a real speaker that forgets `SPEAKER_BACKEND = "real"` in `config/local/speaker.toml` is healthy and mute.
+
+- **Docker image (T-03.4, 2026-11-10):** the image holds no `.env` file and no secret (counts in `docs/deployment/deployment.md`); the `.env` is a read-only bind mount. The process runs as **root** (the generic Dockerfile sets no `USER`); the image also contains `tests/` and `docs/` because it copies the whole service tree. Not fixed: both belong to the deployment tool's Dockerfile.

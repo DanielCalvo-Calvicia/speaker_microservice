@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from application.dtos.playback_outbound import PlaybackOutboundDTO
+from application.dtos.outbound.playback_outbound import PlaybackOutboundDTO
 from application.errors import SpeakerUnavailable
 from domain.value_objects.playback_format import PlaybackFormat
 from infrastructure.outbound.sounddevice_playback import (
@@ -347,7 +347,7 @@ def test_a_reply_longer_than_the_old_three_second_limit_is_played_in_full():
     asyncio.run(run())
 
 
-def test_a_device_that_never_finishes_does_not_hold_the_session_forever(monkeypatch):
+def test_a_device_that_never_finishes_does_not_hold_the_session_forever_and_the_result_says_so(monkeypatch):
     class StuckOutput(FakeRawOutput):
         def write(self, data: bytes) -> Any:
             time.sleep(1.2)
@@ -364,7 +364,11 @@ def test_a_device_that_never_finishes_does_not_hold_the_session_forever(monkeypa
         started = time.monotonic()
         result = await make_playback(StuckDriver()).play(FORMAT, _audio(*_half_seconds(1)), lambda _: None)
 
-        assert result.success is True  # the existing behaviour: a truncated playback is logged, not failed
+        # a device that does not finish within the bound is a failure, not a success (R-6, Q01-6): the
+        # HTTP handler turns it into a `playback_failed` event and the caller can tell the audio was cut
+        assert result.success is False
+        assert result.message.startswith("Playback did not finish: ")
+        assert "0 of 24000 bytes" in result.message  # what the device played of what was queued
         assert time.monotonic() - started < 2.0  # bounded by the audio's own duration (0.5 s) plus the margin
 
     asyncio.run(run())
@@ -382,3 +386,43 @@ def test_the_drain_wait_is_the_duration_of_the_queued_audio_plus_a_margin(queued
 
 def test_the_margin_is_a_real_allowance_for_the_device_latency():
     assert 1.0 <= playback_module._DRAIN_MARGIN_SECONDS <= 10.0
+
+
+# ---- a playback replaced while it is still draining (found on the real device, T-01.7, 2026-11-10) ---------
+
+
+def test_a_playback_replaced_while_it_drains_ends_at_once_as_superseded_not_as_a_failure():
+    """The whole reply was handed over, the device is still playing it, then a new request arrives: the old one
+    must answer "superseded" (success) at once, not wait for its drain bound and then report a stalled device."""
+
+    async def run() -> None:
+        playback = make_playback(RealTimeDriver())
+        first = asyncio.create_task(playback.play(FORMAT, _audio(*_half_seconds(8)), lambda _: None))  # 4 s
+        await asyncio.sleep(0.6)  # its body is all queued; the device is part-way through it
+        replaced_at = time.monotonic()
+
+        second = await playback.play(FORMAT, _audio(*_half_seconds(1)), lambda _: None)
+        first_result = await first
+
+        assert first_result == PlaybackOutboundDTO(True, "Playback session superseded by new request")
+        assert time.monotonic() - replaced_at < 3.0  # it did not wait for its own bound (4 s + 2 s margin)
+        assert second == PlaybackOutboundDTO(True, "Playback session finalized successfully")
+
+    asyncio.run(run())
+
+
+def test_the_end_of_a_replaced_playback_does_not_cut_the_newer_one_short():
+    async def run() -> None:
+        driver = RealTimeDriver()
+        playback = make_playback(driver)
+        first = asyncio.create_task(playback.play(FORMAT, _audio(*_half_seconds(6)), lambda _: None))  # 3 s
+        await asyncio.sleep(0.4)
+        newer = _half_seconds(8)  # 4 s, longer than what is left of the first one's wait
+
+        second = await playback.play(FORMAT, _audio(*newer), lambda _: None)
+        await first
+
+        assert second == PlaybackOutboundDTO(True, "Playback session finalized successfully")
+        assert sum(len(c) for c in driver.streams[-1].written) == sum(len(c) for c in newer)
+
+    asyncio.run(run())

@@ -15,3 +15,4 @@ Architecture decision records of the speaker. They were **written on 2026-11-05 
 | [ADR-009](ADR-009-device-selection-order.md) | Device selection: index, keywords, OS default | Accepted |
 | [ADR-010](ADR-010-shared-logging-and-config-from-environment.md) | `shared_logging` and configuration from environment variables | Accepted |
 | [ADR-011](ADR-011-windows-speaker-runs-natively.md) | On Windows the speaker runs natively, not in Docker | Decided 2026-11-04; not implemented in the deploy tool |
+| [ADR-012](ADR-012-null-backend.md) | A null playback backend (`SPEAKER_BACKEND`), reported in the `reason` of `/available`; Windows Docker allowed on `null` | Accepted 2026-11-09; built and run 2026-11-10 (native, pipeline check, Docker on amd64) |

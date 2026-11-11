@@ -9,6 +9,10 @@ from infrastructure.config.speaker_config import SpeakerConfig
 
 logger = get_logger(__name__)
 
+# A stop (SIGTERM, `docker stop`) waits this long for open requests (a stream, a playback)
+# and then cancels them, so the cleanup runs inside Docker's 10 s grace period (R-16).
+GRACEFUL_SHUTDOWN_SECONDS = 5
+
 
 async def run_http() -> None:
     load_dotenv(find_dotenv(".env"))
@@ -24,6 +28,7 @@ async def run_http() -> None:
             port=server_cfg.port,
             log_config=None,
             timeout_keep_alive=60,
+            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
         )
     )
     logger.info(

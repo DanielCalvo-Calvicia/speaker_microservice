@@ -1,6 +1,6 @@
 # Requirements
 
-Status as of 2026-11-05. **Done** means implemented and covered by the tests in the repository (92 tests, all with a fake audio driver; the fix of R-6 was also run once on a real device on 2026-11-09, outside the test suite); **Needs hardware** means the behaviour depends on a real output device and was not run in the last pass; **Proposed** means suggested in the deployment audit and not decided or built.
+Status as of 2026-11-11. **Done** means implemented and covered by the tests in the repository (132 tests, all with a fake audio driver or the null sink; the fix of R-6 was also run once on a real device on 2026-11-09, outside the test suite); **Needs hardware** means the behaviour depends on a real output device and was not run in the last pass; **Proposed** means suggested in the deployment audit and not decided or built.
 
 Sources: the role of the service in `../CLAUDE.md` and `README.md`; the contracts `contracts.stream` (`SPEAKER_INBOUND`, `SPEAKER_OUTBOUND`) and `contracts.api`; the deployment audit [`docs/deployment_audit/speaker.md`](../deployment_audit/speaker.md) (2026-11-04); the decisions in [`docs/decisions/`](../decisions/README.md).
 
@@ -22,10 +22,10 @@ Sources: the role of the service in `../CLAUDE.md` and `README.md`; the contract
 | FR-12 | Configuration only through environment variables (and `.env`), documented in `.env.example` | Done | |
 | FR-13 | Logging through `shared_logging` with trace continuation (`traceparent`, `x-trace-id`) | Done | ADR-010 |
 | FR-14 | CORS from `ALLOWED_ORIGINS` | Done | |
-| FR-15 | A `null` sink backend (`SPEAKER_BACKEND=real\|null`) behind `AudioPlaybackPort`, chosen before `sounddevice` is imported, that drains the stream and paces itself to real time, so a machine without a sound card or PortAudio can run the service | **Proposed** (audit, 2026-11-04) | R-1, R-2 |
-| FR-16 | `/available` reports which backend is active (a `backend` field in `AvailabilityResponse`, which means a new `contracts` version) | **Proposed** | R-4 |
+| FR-15 | A `null` sink backend (`SPEAKER_BACKEND=real\|null`) behind `SpeakerOutboundPort`, chosen before `sounddevice` is imported, that drains the stream and paces itself to real time, so a machine without a sound card or PortAudio can run the service | Done (2026-11-10): `tests/infrastructure/test_null_audio_playback.py`, `tests/composition_root/test_backend_selection.py`; run as the real service, in the pipeline check and in Docker on amd64 on 2026-11-10 (T-03) | R-1, R-2, ADR-012 |
+| FR-16 | `/available` reports which backend is active: in its `reason` (decided 2026-11-09, no `contracts` change; the audit had proposed a `backend` field), and the service logs it once at start | Done (2026-11-10) | R-4, ADR-012, `tests/composition_root/test_backend_selection.py` |
 | FR-17 | Device selection in the per-machine hardware configuration of the deploy tool (keywords per machine, index when known) | **Proposed** | R-3 |
-| FR-18 | A reply is played in full: after the body ends the service waits for the device up to the duration of the queued audio plus 2 s (`_DRAIN_MARGIN_SECONDS`), not a fixed 3 s | Done (2026-11-09): a fake real-time device, and a real device (a 7.12 s reply written in full) | R-6, `test_a_reply_longer_than_the_old_three_second_limit_is_played_in_full` |
+| FR-18 | A reply is played in full: after the body ends the service waits for the device up to the duration of the queued audio plus 2 s (`_DRAIN_MARGIN_SECONDS`), not a fixed 3 s | Done (2026-11-09): a fake real-time device, and a real device (a 7.12 s reply written in full); a bound that is hit answers `success: false` since 2026-11-10 | R-6, `test_a_reply_longer_than_the_old_three_second_limit_is_played_in_full` |
 
 ## Non-functional
 
@@ -40,4 +40,4 @@ Sources: the role of the service in `../CLAUDE.md` and `README.md`; the contract
 | NFR-7 | The logs hold counts, never audio | Done | |
 | NFR-8 | No secret in the repository, the documents or the tests | Done | |
 | NFR-9 | The service builds on its own: `contracts` is vendored (`vendor/`), `shared-logging` is a sibling checkout | Done | |
-| NFR-10 | Tests do not need hardware; the end-to-end script `tests/simple.py` does | Done (92 pass); `simple.py` not run | |
+| NFR-10 | Tests do not need hardware; the end-to-end script `tests/simple.py` does | Done (132 pass); `simple.py` not run | |

@@ -19,6 +19,7 @@ Every variable has a default; none is required.
 
 | Variable | Default | Description | Sensitive |
 |---|---|---|---|
+| `SPEAKER_BACKEND` | `real` | `real` = the sound card; `null` = plays nothing, for a machine with no sound card (ADR-012): it reads the whole request stream, takes the time the audio would take and keeps no audio. Case-insensitive; any other value raises an error that names the variable and stops the start. The code default is `real` on purpose: a missing sound card is never replaced by `null`. The deploy catalogue presets `null`; the machine with the sound card sets `real` in `deployment/config/local/speaker.toml` |
 | `SPEAKER_DEVICE_INDEX` | empty | Index of the output device (PortAudio). Empty means auto-detect. A non-number stops the start with a `ValueError` | no |
 | `SPEAKER_DEVICE_KEYWORDS` | `i2s,hw,default,sysdefault` | Words looked for, case-insensitive, in the device names when the index is empty; the first output device that matches wins, otherwise the OS default output is used. The defaults suit ALSA / Raspberry Pi; on Windows no name usually matches and the OS default is used | no |
 

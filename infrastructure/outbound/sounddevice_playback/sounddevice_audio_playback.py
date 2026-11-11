@@ -1,6 +1,6 @@
 """Outbound adapter: plays audio on an output device through an ``AudioDriver``.
 
-Implements ``AudioPlaybackPort``. It only talks to hardware; which formats to try is decided
+Implements ``SpeakerOutboundPort``. It only talks to hardware; which formats to try is decided
 by ``domain.operations.format_negotiation``, which device to use by ``DeviceSelector``.
 
 A playback session pumps the incoming stream into a queue that a worker drains into the
@@ -12,10 +12,10 @@ from collections.abc import AsyncIterator, Callable
 
 from shared_logging import get_logger
 
-from application.dtos.playback_outbound import PlaybackOutboundDTO
-from application.dtos.readiness_outbound import ReadinessOutboundDTO
+from application.dtos.outbound.playback_outbound import PlaybackOutboundDTO
+from application.dtos.outbound.readiness_outbound import ReadinessOutboundDTO
 from application.errors import SpeakerUnavailable
-from application.ports.outbound.audio_playback_port import AudioPlaybackPort
+from application.ports.outbound.speaker_outbound_port import SpeakerOutboundPort
 from domain.operations.format_negotiation import fallback_formats
 from domain.operations.resample import LinearResampler
 from domain.value_objects.playback_format import PlaybackFormat
@@ -44,7 +44,7 @@ def _drain_timeout_seconds(queued_bytes: int, audio_format: PlaybackFormat) -> f
     return queued_bytes / bytes_per_second + _DRAIN_MARGIN_SECONDS
 
 
-class SoundDeviceAudioPlayback(AudioPlaybackPort):
+class SoundDeviceAudioPlayback(SpeakerOutboundPort):
     def __init__(self, driver: AudioDriver, selector: DeviceSelector) -> None:
         self._driver = driver
         self._selector = selector
@@ -113,6 +113,7 @@ class SoundDeviceAudioPlayback(AudioPlaybackPort):
         on_started(PlaybackOutboundDTO(success=True, message="Playback stream started"))
 
         stream_error: Exception | None = None
+        drain_timed_out = False
         try:
             async for chunk in audio_stream:
                 if not self._is_playing or self._current_session is not session_id:
@@ -139,20 +140,26 @@ class SoundDeviceAudioPlayback(AudioPlaybackPort):
             superseded = self._current_session is not session_id
             if not superseded:
                 await queue.put(None)
-                try:
-                    await asyncio.wait_for(
-                        queue.join(),
-                        timeout=_drain_timeout_seconds(counters.queued_bytes, audio_format),
-                    )
+                drained = await self._wait_for_drain(
+                    queue, session_id, _drain_timeout_seconds(counters.queued_bytes, audio_format)
+                )
+                if drained == "drained":
                     logger.info("Playback queue drained successfully")
-                except TimeoutError:
+                elif drained == "replaced":
+                    # A newer request (or a close) took over while this one was still draining:
+                    # the state belongs to it now, and this one just ends.
+                    superseded = True
+                    logger.info("Playback session superseded while draining")
+                else:
+                    drain_timed_out = True
                     logger.warning(
                         "Playback queue cleanup timed out; truncating",
                         queued_bytes=counters.queued_bytes,
                         written_bytes=counters.written_bytes,
                     )
-                self._is_playing = False
-                self._current_session = None
+                if not superseded:
+                    self._is_playing = False
+                    self._current_session = None
 
         logger.info(
             "Playback session finalized",
@@ -167,7 +174,43 @@ class SoundDeviceAudioPlayback(AudioPlaybackPort):
             return PlaybackOutboundDTO(
                 success=True, message="Playback session superseded by new request"
             )
+        if drain_timed_out:
+            # The device did not play what was queued within the bound (a stalled device): the audio
+            # was cut, so the caller is told instead of being answered "success" (R-6, Q01-6).
+            return PlaybackOutboundDTO(
+                success=False,
+                message=(
+                    "Playback did not finish: the device played "
+                    f"{counters.written_bytes} of {counters.queued_bytes} bytes "
+                    "before the wait ran out"
+                ),
+            )
         return PlaybackOutboundDTO(success=True, message="Playback session finalized successfully")
+
+    async def _wait_for_drain(
+        self, queue: "asyncio.Queue[bytes | None]", session_id: object, timeout: float
+    ) -> str:
+        """Wait for the device to play the queue: ``drained``, ``replaced`` or ``timeout``.
+
+        ``replaced`` means a newer request or a close made this session no longer the current one
+        (its worker was cancelled, so the queue would never drain): waiting out the bound would hold
+        the caller's request for nothing and report a stalled device that is not stalled.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        join = asyncio.ensure_future(queue.join())
+        try:
+            while not join.done():
+                if self._current_session is not session_id:
+                    return "replaced"
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return "timeout"
+                await asyncio.wait({join}, timeout=min(_QUEUE_POLL_SECONDS, remaining))
+            return "drained"
+        finally:
+            if not join.done():
+                join.cancel()
 
     async def close(self) -> None:
         logger.info("Cleaning up sounddevice resources")

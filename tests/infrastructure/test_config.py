@@ -44,3 +44,17 @@ def test_speaker_config_parses_index_and_keywords():
 def test_blank_index_means_unset():
     cfg = SpeakerConfig.from_env({"SPEAKER_DEVICE_INDEX": "  "})
     assert cfg.device_index is None
+
+
+def test_the_backend_defaults_to_real_and_reads_null():
+    assert SpeakerConfig.from_env({}).backend == "real"
+    assert SpeakerConfig.from_env({"SPEAKER_BACKEND": "  NULL "}).backend == "null"
+    assert SpeakerConfig.from_env({"SPEAKER_BACKEND": "real"}).backend == "real"
+    assert SpeakerConfig.from_env({"SPEAKER_BACKEND": ""}).backend == "real"
+
+
+def test_an_unknown_backend_stops_the_start_and_names_the_variable():
+    import pytest
+
+    with pytest.raises(ValueError, match="SPEAKER_BACKEND"):
+        SpeakerConfig.from_env({"SPEAKER_BACKEND": "fake"})

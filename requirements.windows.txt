@@ -1,22 +1,12 @@
-# HTTP & Server
-fastapi
-uvicorn
-python-dotenv
-httpx
+# Exact versions of the packages the service imports: the ones installed in the venv where the service
+# ran (2026-11-09, Python 3.14). Their own dependencies are not pinned (no lock file). To move a pin:
+# install it, run the service, change the line.
+fastapi==0.136.1
+uvicorn==0.47.0
+python-dotenv==1.2.2
+sounddevice==0.5.5
 
-# Audio & DSP
-sounddevice
-soundfile
-numpy
-
-# Testing & Dev
-pytest
-websockets
-
-# Tooling
-ruff
-black
-mypy
+# Tests and lint are in requirements-dev.txt, not here: the deploy tool installs this file.
 
 # Shared logging + distributed tracing (local checkout; see shared-logging/README.md)
 -e ../shared-logging

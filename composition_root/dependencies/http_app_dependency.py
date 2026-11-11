@@ -6,36 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from shared_logging import TracingMiddleware, get_logger
 
-from application.ports.inbound.speaker_playback_port import SpeakerPlaybackPort
-from application.ports.outbound.audio_playback_port import AudioPlaybackPort
-from application.services.speaker_service import SpeakerService
-from infrastructure.config.speaker_config import SpeakerConfig
+from application.ports.service.speaker_service_port import SpeakerServicePort
 from infrastructure.inbound.http.http_handler import SpeakerHandler
-from infrastructure.outbound.sounddevice_playback.sounddevice_audio_playback import (
-    SoundDeviceAudioPlayback,
-)
-from infrastructure.outbound.sounddevice_playback.sounddevice_device_selector import (
-    DeviceSelector,
-)
-from infrastructure.outbound.sounddevice_playback.sounddevice_driver import SoundDeviceDriver
 
 logger = get_logger(__name__)
 
 
-def new_audio_playback(cfg: SpeakerConfig) -> AudioPlaybackPort:
-    driver = SoundDeviceDriver()
-    return SoundDeviceAudioPlayback(
-        driver=driver,
-        selector=DeviceSelector(driver, cfg.target_keywords, cfg.device_index),
-    )
-
-
-def new_speaker_service(playback: AudioPlaybackPort, name: str) -> SpeakerPlaybackPort:
-    return SpeakerService(playback=playback, name=name)
-
-
 def new_http_app(
-    port: SpeakerPlaybackPort,
+    service: SpeakerServicePort,
     name: str,
     allowed_origins: tuple[str, ...],
 ) -> FastAPI:
@@ -43,7 +21,7 @@ def new_http_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
         logger.info("Shutting down: releasing the speaker")
-        await port.stop_playback()
+        await service.stop_playback()
 
     app = FastAPI(
         title=name,
@@ -68,6 +46,6 @@ def new_http_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.include_router(SpeakerHandler(port).router)
+    app.include_router(SpeakerHandler(service).router)
     app.add_middleware(TracingMiddleware)  # added last so it is outermost
     return app

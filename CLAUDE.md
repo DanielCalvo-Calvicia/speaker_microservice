@@ -2,9 +2,9 @@
 
 Port **8003**. Python/FastAPI. Plays raw PCM16 audio on the local output device (`sounddevice`/PortAudio). Status: working, needs retest after recent changes. See `README.md` and `../CLAUDE.md`.
 
-Current state (2026-11-05): branch `feature_ai_claude_2`, last commit `2012700` "Bundle contracts 0.15.0" (the speaker feature commit is `eacddae`, 2026-09-20). The documentation was restructured on 2026-11-05 (see below) and is not committed; `docs/deployment_audit/` is untracked. Tests: `92 passed` (2026-11-09: the drain wait of R-6 fixed, 8 new tests; run on a real device on 2026-11-09: a 7.12 s reply played in full). Real playback on a device was not run; ruff (microphone venv) reports 8 findings here, unfixed. `git status` is the truth.
+Current state (2026-11-11): branch `feature_ai_claude_2`, last commit `49e26b3` "Speaker: wait for the duration of the queued audio instead of a fixed 3 s (R-6)"; the work of the deployment plan (`docs/tasks/`) is uncommitted. Tests: `132 passed` (2026-11-11: the layout aligned with stt, 12 architecture tests added; 120 on 2026-11-10: the null backend, the lazy import of the driver, the requirements split and a drain bound that answers `success: false`; 92 before; the R-6 fix was run on a real device on 2026-11-09: a 7.12 s reply played in full). The null backend was also run as the real service, through the pipeline check and in Docker on amd64 (2026-11-10; `docker stop` with a playback in flight was killed after 10 s until the graceful-shutdown timeout of the same day, R-16, now fixed). Real playback was retested on the real device on 2026-11-10 (T-01.7; it found and fixed R-17, a playback replaced while draining); ruff (microphone venv) reports 4 findings here and mypy 4 errors, unfixed (none added). `git status` is the truth.
 
-Read [README.md](README.md) for the state and [docs/architecture/architecture.md](docs/architecture/architecture.md) for the structure. Known debt is numbered R-1 to R-15 in [docs/risks/risks-and-debt.md](docs/risks/risks-and-debt.md).
+Read [README.md](README.md) for the state and [docs/architecture/architecture.md](docs/architecture/architecture.md) for the structure. Known debt is numbered R-1 to R-17 in [docs/risks/risks-and-debt.md](docs/risks/risks-and-debt.md).
 
 ## MANDATORY: every change updates the documentation
 
@@ -38,21 +38,24 @@ Brain streams TTS audio to `POST /process/stream/set?sample_rate=24000&channels=
 
 ## Layout
 
-`main.py` → `main_flow/` → `composition_root/` → `application/` → `domain/` → `infrastructure/`.
+`main.py` → `main_flow/` → `composition_root/` → `application/` → `domain/` → `infrastructure/`. Same layout as `stt_microservice` (aligned 2026-11-11): `application/dtos/{inbound,outbound}`, three ports (`SpeakerInboundPort`, `SpeakerServicePort`, `SpeakerOutboundPort`), the HTTP adapter in `routes/ response/ errors/ helpers/`, one file per dependency in `composition_root/dependencies/`, and `tests/architecture/` enforcing the dependency rule, the DTO folders and the ports.
 
 ## Rules
 
 - Events use `contracts.stream` (`SPEAKER_INBOUND`/`SPEAKER_OUTBOUND`) and the shared codec.
 - Audio is never converted between services. The speaker reopens at 44.1 kHz and resamples (`LinearResampler`) only if its device rejects the requested rate.
-- Config: `SPEAKER_DEVICE_INDEX` or `SPEAKER_DEVICE_KEYWORDS` picks the device. `ALLOWED_ORIGINS` sets CORS. Also `SERVICE_NAME/HOST/PORT`, `LOG_LEVEL`.
+- Config: `SPEAKER_BACKEND=real|null` (code default `real`: a missing sound card is never replaced by `null`; `null` plays nothing, needs no PortAudio and is reported in the `reason` of `/available`, ADR-012; the deploy catalogue presets `null`, so the machine with the sound card sets `real` in `config/local/speaker.toml`). `SPEAKER_DEVICE_INDEX` or `SPEAKER_DEVICE_KEYWORDS` picks the device. `ALLOWED_ORIGINS` sets CORS. Also `SERVICE_NAME/HOST/PORT`, `LOG_LEVEL`. The `.env` next to `main.py` is loaded at start.
+- The `sounddevice` driver is imported only on the `real` branch of `composition_root/dependencies/audio_playback_dependency.py`: keep it lazy, so `null` runs on a machine without PortAudio (a test makes `sounddevice` unimportable).
 - There is **no auth** in this service (the bearer-token check was removed). A common auth middleware is planned for all services. Do not build a service-specific scheme.
 - The old direct-stream autoloader was removed on purpose (`docs/old/autoloader/`). Do not reintroduce it.
-- `contracts` comes from `vendor/contracts_microservice-<version>.whl` (0.15.0); refresh it with `contracts/scripts/bundle.py`.
-- Ruff/mypy/black are configured in `pyproject.toml` but not installed in this venv. Do not bulk-fix lint unasked.
+- `contracts` comes from `vendor/contracts_microservice-<version>.whl` (0.16.0; the service venv still has 0.15.0 installed); refresh it with `contracts/scripts/bundle.py`.
+- Ruff/mypy/black are configured in `pyproject.toml` and listed in `requirements.dev.txt` (the deploy tool never installs it) but not installed in this venv: run them with the microphone venv (`..\microphone_microservice\windows\Scripts\ruff.exe check .` and `python -m mypy .`). Known today (2026-11-11): 4 ruff findings and 4 mypy errors (R-12). Add none; do not bulk-fix lint unasked.
+- **Tasks:** the deployment plan is in [docs/tasks/](docs/tasks/README.md) (order in [ORDER.md](docs/tasks/ORDER.md)); a task that plays sound, builds an image or downloads something is manual: say what it does and wait for "go".
 
 ## Commands
 
 ```powershell
+& windows\Scripts\python.exe -m pip install -r requirements.dev.txt   # once: pytest, httpx and the lint tools
 & windows\Scripts\python.exe main.py
 & windows\Scripts\python.exe -m pytest
 ```

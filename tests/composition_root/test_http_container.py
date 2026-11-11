@@ -2,9 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from composition_root.containers import http_container
-from composition_root.dependencies import speaker_dependencies
 from infrastructure.config.server_config import ServerConfig
 from infrastructure.config.speaker_config import SpeakerConfig
+from infrastructure.outbound.sounddevice_playback import sounddevice_driver
 from infrastructure.outbound.sounddevice_playback.audio_driver import DeviceInfo
 
 
@@ -24,7 +24,7 @@ class FakeDriver:
 
 @pytest.fixture(autouse=True)
 def fake_sounddevice_driver(monkeypatch):
-    monkeypatch.setattr(speaker_dependencies, "SoundDeviceDriver", FakeDriver)
+    monkeypatch.setattr(sounddevice_driver, "SoundDeviceDriver", FakeDriver)
 
 
 def test_container_wires_an_app_that_answers_health():

@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from application.dtos.playback_outbound import PlaybackOutboundDTO
+from application.dtos.outbound.playback_outbound import PlaybackOutboundDTO
 
 
 @dataclass(slots=True, frozen=True)

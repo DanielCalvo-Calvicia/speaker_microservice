@@ -1,15 +1,15 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable
 
-from application.dtos.play_stream_inbound import PlayStreamInboundDTO
-from application.dtos.playback_outbound import PlaybackOutboundDTO
-from application.dtos.readiness_outbound import ReadinessOutboundDTO
-from application.ports.outbound.audio_playback_port import AudioPlaybackPort
+from application.dtos.inbound.play_stream_inbound import PlayStreamInboundDTO
+from application.dtos.outbound.playback_outbound import PlaybackOutboundDTO
+from application.dtos.outbound.readiness_outbound import ReadinessOutboundDTO
+from application.ports.outbound.speaker_outbound_port import SpeakerOutboundPort
 from application.services.speaker_service import SpeakerService
 from domain.value_objects.playback_format import PlaybackFormat
 
 
-class FakePlayback(AudioPlaybackPort):
+class FakePlayback(SpeakerOutboundPort):
     def __init__(self) -> None:
         self.played: list[PlaybackFormat] = []
         self.closed = 0

@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
 
-from application.dtos.playback_outbound import PlaybackOutboundDTO
-from application.dtos.readiness_outbound import ReadinessOutboundDTO
+from application.dtos.outbound.playback_outbound import PlaybackOutboundDTO
+from application.dtos.outbound.readiness_outbound import ReadinessOutboundDTO
 from domain.value_objects.playback_format import PlaybackFormat
 
 
-class AudioPlaybackPort(ABC):
+class SpeakerOutboundPort(ABC):
     """What the application needs from an output device."""
 
     @abstractmethod
