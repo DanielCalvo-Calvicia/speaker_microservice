@@ -1,0 +1,33 @@
+import hmac
+
+from fastapi import HTTPException, Security, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from shared_logging import get_logger
+
+logger = get_logger(__name__)
+
+_bearer = HTTPBearer(auto_error=False)
+
+
+class ApiKeyAuthenticator:
+    """FastAPI dependency that accepts a request only if it carries the configured bearer key."""
+
+    def __init__(self, expected_key: str) -> None:
+        if not expected_key:
+            raise ValueError("expected_key must not be empty")
+        self._expected = expected_key.encode("utf-8")
+
+    def __call__(
+        self,
+        credentials: HTTPAuthorizationCredentials | None = Security(_bearer),  # noqa: B008
+    ) -> str:
+        if credentials is None or not hmac.compare_digest(
+            credentials.credentials.encode("utf-8"), self._expected
+        ):
+            logger.warning("Rejected request with missing or invalid API key")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or missing API key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return credentials.credentials

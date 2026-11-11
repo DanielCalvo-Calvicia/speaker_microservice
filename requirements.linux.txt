@@ -1,17 +1,18 @@
-# NOTE: On Linux/Raspberry Pi systems, install the following packages first:
-# sudo apt-get update && sudo apt-get install -y portaudio19-dev python3-pyaudio python3-sounddevice
+# Same packages and versions as requirements.windows.txt (they were run on Windows; Linux and the
+# Raspberry Pi were not run yet). The pins resolve binary wheels for CPython 3.11 and 3.12 on
+# manylinux_2_28_aarch64 (pip --dry-run, 2026-11-09).
+# System packages first (Debian / Raspberry Pi OS): sudo apt-get install -y libportaudio2 portaudio19-dev
+# (only the real sound-card backend needs them; SPEAKER_BACKEND=null does not import sounddevice)
+fastapi==0.136.1
+uvicorn==0.47.0
+python-dotenv==1.2.2
+sounddevice==0.5.5
 
-# HTTP & Server
-fastapi
-uvicorn
-python-dotenv
-httpx
+# Tests and lint are in requirements-dev.txt, not here: the deploy tool installs this file.
 
-# Audio & DSP
-sounddevice
-soundfile
-numpy
+# Shared logging + distributed tracing (local checkout; see shared-logging/README.md)
+-e ../shared-logging
 
-# Testing & Dev
-pytest
-websockets
+# Project contracts (single source of truth for what microservices exchange), bundled in this
+# folder so the service builds on its own. Refresh with contracts/scripts/bundle.py
+./vendor/contracts_microservice-0.16.0-py3-none-any.whl

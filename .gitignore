@@ -140,3 +140,4 @@ ehthumbs.db
 *.bak
 *.swp
 *~
+!.env.example
